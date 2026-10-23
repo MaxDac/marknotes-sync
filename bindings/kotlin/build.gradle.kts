@@ -29,7 +29,7 @@ kotlin {
 }
 
 dependencies {
-    implementation("net.java.dev.jna:jna:5.17.0")
+    implementation("net.java.dev.jna:jna:5.19.1")
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
 }
