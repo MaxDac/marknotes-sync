@@ -44,6 +44,11 @@ These mirror `.github/workflows/ci.yml`:
 
 On Windows run the scripts from Git Bash, and use `.\gradlew.bat`.
 
+PRs also run **Dependency review** (fails on high-severity vulnerabilities), **CodeQL** (Rust, JavaScript/TypeScript,
+Actions) and **actionlint**. The `main` ruleset requires every CI job above plus `Dependency review` and CodeQL
+results by name, so don't rename the jobs; it also allows squash merges only and requires resolved review threads.
+Dependabot patch and minor updates merge automatically once green (the `uniffi` group and majors don't).
+
 ## Rules
 
 1. **Spec first.** A behaviour change lands in marknotes-spec (`note-format.md`, fixtures, `features.md`) first;
