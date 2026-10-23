@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag vX.Y.Z (matching the version in Cargo.toml and bindings/npm/package.json) to publish:
+# Push a tag vX.Y.Z or vX.Y.Z-rc.N (a pre-release), matching the version in Cargo.toml and bindings/npm/package.json) to publish:
 #   marknotes-sync-X.Y.Z.tgz                 npm package (WebAssembly), for desktop and web
 #   marknotes-sync-kotlin-X.Y.Z.jar          Kotlin bindings (needs JNA), for Android and the JVM
 #   marknotes-sync-android-X.Y.Z.aar         Android libraries (arm64-v8a, x86_64)
@@ -93,4 +93,7 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "marknotes-sync $VERSION" --generate-notes
+        run: |
+          prerelease=()
+          [[ "$VERSION" == *-* ]] && prerelease=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" dist/* --title "marknotes-sync $VERSION" --generate-notes "${prerelease[@]}"
