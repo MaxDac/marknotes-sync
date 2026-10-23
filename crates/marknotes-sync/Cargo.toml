@@ -3,6 +3,7 @@ name = "marknotes-sync"
 description = "Shared sync core for the MarkNotes apps: sync planner, three-way merge, manifest"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 publish = false
