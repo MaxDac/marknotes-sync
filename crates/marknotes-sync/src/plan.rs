@@ -9,6 +9,7 @@ use crate::model::{Action, LocalEntry, RemoteEntry, SyncInput, SyncPlan, SyncRec
 use crate::paths;
 
 pub const CLASH_MESSAGE: &str = "is a file on one side and a folder on the other";
+pub const CASE_MESSAGE: &str = "differs only in case from another path";
 
 pub fn plan(input: &SyncInput) -> SyncPlan {
     Planner::new(input).run()
@@ -17,6 +18,9 @@ pub fn plan(input: &SyncInput) -> SyncPlan {
 struct Planner<'a> {
     local_all: Vec<&'a LocalEntry>,
     remote_all: Vec<&'a RemoteEntry>,
+    /// Entries that are not synced (other files, hidden entries): they only keep their folder from being deleted.
+    local_ignored: Vec<&'a str>,
+    remote_ignored: Vec<&'a str>,
     records: HashMap<&'a str, &'a SyncRecord>,
     record_order: Vec<&'a SyncRecord>,
     local_folders: HashSet<&'a str>,
@@ -42,26 +46,31 @@ fn has_pending_ancestor(path: &str, pending: &[&str]) -> bool {
         .any(|p| *p != path && paths::is_ancestor(p, path))
 }
 
+fn is_synced(path: &str, is_folder: bool) -> bool {
+    paths::is_syncable_path(path) && paths::is_synced_entry(path, is_folder)
+}
+
+/// `a/b/c` gives `a`, `a/b` and `a/b/c`.
+fn prefixes(path: &str) -> impl Iterator<Item = &str> {
+    path.match_indices('/')
+        .map(move |(i, _)| &path[..i])
+        .chain(std::iter::once(path))
+}
+
 fn remote_changed(entry: &RemoteEntry, record: &SyncRecord) -> bool {
     entry.version != record.remote_version || entry.id != record.remote_id
 }
 
 impl<'a> Planner<'a> {
     fn new(input: &'a SyncInput) -> Self {
-        let local_all: Vec<&LocalEntry> = input
+        let (local_all, local_ignored): (Vec<&LocalEntry>, Vec<&LocalEntry>) = input
             .local
             .iter()
-            .filter(|e| {
-                paths::is_syncable_path(&e.path) && paths::is_synced_entry(&e.path, e.is_folder)
-            })
-            .collect();
-        let remote_all: Vec<&RemoteEntry> = input
+            .partition(|e| is_synced(&e.path, e.is_folder));
+        let (remote_all, remote_ignored): (Vec<&RemoteEntry>, Vec<&RemoteEntry>) = input
             .remote
             .iter()
-            .filter(|e| {
-                paths::is_syncable_path(&e.path) && paths::is_synced_entry(&e.path, e.is_folder)
-            })
-            .collect();
+            .partition(|e| is_synced(&e.path, e.is_folder));
         let mut records = HashMap::new();
         for r in &input.records {
             records.insert(r.path.as_str(), r);
@@ -89,6 +98,8 @@ impl<'a> Planner<'a> {
                 .collect(),
             local_all,
             remote_all,
+            local_ignored: local_ignored.iter().map(|e| e.path.as_str()).collect(),
+            remote_ignored: remote_ignored.iter().map(|e| e.path.as_str()).collect(),
             record_order: records.values().copied().collect(),
             records,
             manifest: input.manifest.as_deref().and_then(parse_manifest),
@@ -103,8 +114,12 @@ impl<'a> Planner<'a> {
         planner
     }
 
-    fn run(mut self) -> SyncPlan {
-        let mut clashes: Vec<&str> = self
+    /// Paths that are a file on one side and a folder on the other, and paths that differ only in case from
+    /// another one across the local tree, the drive and the records (with everything inside them): one error per
+    /// path, the file/folder message winning.
+    fn errors(&self) -> HashMap<&'a str, &'static str> {
+        let mut errors = HashMap::new();
+        let clashes = self
             .local_folders
             .iter()
             .filter(|p| self.remote_files.contains_key(*p))
@@ -112,15 +127,49 @@ impl<'a> Planner<'a> {
                 self.local_files
                     .keys()
                     .filter(|p| self.remote_folders.contains_key(*p)),
-            )
-            .copied()
-            .collect();
-        clashes.sort_by(|a, b| paths::compare(a, b));
+            );
         for p in clashes {
+            errors.insert(*p, CLASH_MESSAGE);
+        }
+
+        let all: HashSet<&'a str> = self
+            .local_all
+            .iter()
+            .map(|e| e.path.as_str())
+            .chain(self.remote_all.iter().map(|e| e.path.as_str()))
+            .chain(self.record_order.iter().map(|r| r.path.as_str()))
+            .collect();
+        let mut spellings: HashMap<String, HashSet<&str>> = HashMap::new();
+        for path in &all {
+            for prefix in prefixes(path) {
+                spellings
+                    .entry(paths::fold_case(prefix))
+                    .or_default()
+                    .insert(prefix);
+            }
+        }
+        let colliding: HashSet<&str> = spellings
+            .into_values()
+            .filter(|s| s.len() > 1)
+            .flatten()
+            .collect();
+        for path in all {
+            if prefixes(path).any(|p| colliding.contains(p)) {
+                errors.entry(path).or_insert(CASE_MESSAGE);
+            }
+        }
+        errors
+    }
+
+    fn run(mut self) -> SyncPlan {
+        let errors = self.errors();
+        let mut error_paths: Vec<&str> = errors.keys().copied().collect();
+        error_paths.sort_by(|a, b| paths::compare(a, b));
+        for p in error_paths {
             self.skipped.insert(p);
             self.actions.push(Action::Error {
                 path: p.to_string(),
-                message: CLASH_MESSAGE.to_string(),
+                message: errors[p].to_string(),
             });
         }
 
@@ -294,9 +343,8 @@ impl<'a> Planner<'a> {
         let p = path.to_string();
         match record {
             Some(r) if !self.local_changed(path, r) => {
-                if has_pending_ancestor(path, &self.pending_local_folder_deletes) {
-                    self.actions.push(Action::Forget { path: p });
-                } else {
+                // Inside a folder deletion: step 3 deletes it and drops its record.
+                if !has_pending_ancestor(path, &self.pending_local_folder_deletes) {
                     self.actions.push(Action::DeleteLocal { path: p });
                 }
             }
@@ -313,9 +361,7 @@ impl<'a> Planner<'a> {
                     .iter()
                     .map(|(p, _)| *p)
                     .collect();
-                if has_pending_ancestor(path, &pending) {
-                    self.actions.push(Action::Forget { path: p });
-                } else {
+                if !has_pending_ancestor(path, &pending) {
                     self.actions.push(Action::DeleteRemote {
                         path: p,
                         remote: remote.clone(),
@@ -349,6 +395,7 @@ impl<'a> Planner<'a> {
         self.record_order
             .iter()
             .filter(|r| r.path == folder || paths::is_ancestor(folder, &r.path))
+            .filter(|r| !self.skipped.contains(r.path.as_str()))
             .map(|r| r.path.clone())
             .collect()
     }
@@ -378,9 +425,25 @@ impl<'a> Planner<'a> {
         }
     }
 
+    /// A folder that holds an entry that is not synced, or one skipped with an error, is kept: its synced contents
+    /// are handled one by one.
+    fn has_kept_entries<'p>(
+        &self,
+        folder: &str,
+        ignored: &[&str],
+        mut synced: impl Iterator<Item = &'p str>,
+    ) -> bool {
+        ignored.iter().any(|p| paths::is_ancestor(folder, p))
+            || synced.any(|p| paths::is_ancestor(folder, p) && self.skipped.contains(p))
+    }
+
     /// A local folder deleted on the drive is recreated there when it holds something the drive never had (a new
-    /// folder, a new file or a locally edited one).
+    /// folder, a new file or a locally edited one) or anything that is not synced.
     fn has_local_survivors(&self, folder: &str) -> bool {
+        let synced = self.local_all.iter().map(|e| e.path.as_str());
+        if self.has_kept_entries(folder, &self.local_ignored, synced) {
+            return true;
+        }
         self.local_all.iter().any(|e| {
             if !paths::is_ancestor(folder, &e.path) {
                 return false;
@@ -395,6 +458,10 @@ impl<'a> Planner<'a> {
     }
 
     fn has_remote_survivors(&self, folder: &str) -> bool {
+        let synced = self.remote_all.iter().map(|e| e.path.as_str());
+        if self.has_kept_entries(folder, &self.remote_ignored, synced) {
+            return true;
+        }
         self.remote_all.iter().any(|e| {
             if !paths::is_ancestor(folder, &e.path) {
                 return false;
@@ -406,5 +473,41 @@ impl<'a> Planner<'a> {
                 record.is_none_or(|r| remote_changed(e, r))
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn case_collisions_inside_a_deleted_folder_keep_it() {
+        // Deleted on the drive, but A/x.md and A/X.md collide: nothing inside A may be deleted or forgotten.
+        let input: SyncInput = serde_json::from_value(serde_json::json!({
+            "local": [
+                { "path": "A", "isFolder": true, "modifiedMillis": 1 },
+                { "path": "A/x.md", "isFolder": false, "modifiedMillis": 1, "sha256": "h1" }
+            ],
+            "remote": [],
+            "records": [
+                { "path": "A", "isFolder": true, "remoteId": "fA", "remoteVersion": "", "localHash": "", "syncedAt": 1 },
+                { "path": "A/x.md", "isFolder": false, "remoteId": "r1", "remoteVersion": "v1", "localHash": "h1", "syncedAt": 1 },
+                { "path": "A/X.md", "isFolder": false, "remoteId": "r2", "remoteVersion": "v1", "localHash": "h2", "syncedAt": 1 }
+            ],
+            "manifest": null
+        }))
+        .unwrap();
+        let error = |path: &str| Action::Error {
+            path: path.into(),
+            message: CASE_MESSAGE.into(),
+        };
+        assert_eq!(
+            plan(&input).actions,
+            vec![
+                error("A/X.md"),
+                error("A/x.md"),
+                Action::CreateRemoteFolder { path: "A".into() },
+            ]
+        );
     }
 }

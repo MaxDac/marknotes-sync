@@ -56,6 +56,50 @@ fn from<T: serde::de::DeserializeOwned>(v: &Value) -> T {
     serde_json::from_value(v.clone()).unwrap()
 }
 
+/// Fixture folders the core implements in full: every file in them must have a runner below.
+const OWNED_FOLDERS: [&str; 3] = ["sync", "manifest", "merge"];
+
+/// The fixture files that have a runner in this file.
+const MAPPED: [&str; 8] = [
+    "sync/plan.json",
+    "sync/reconcile.json",
+    "sync/multi-drive.json",
+    "manifest/parse.json",
+    "manifest/serialize.json",
+    "manifest/build.json",
+    "merge/merge3.json",
+    "merge/conflict-copy-name.json",
+];
+
+#[test]
+fn every_owned_fixture_file_is_mapped() {
+    let mut unmapped = Vec::new();
+    for folder in OWNED_FOLDERS {
+        let dir = spec_dir().join("fixtures").join(folder);
+        let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!(
+                "can't list {} ({e}); run `git submodule update --init` or set MARKNOTES_SPEC_DIR",
+                dir.display()
+            )
+        });
+        for entry in entries {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            if name.ends_with(".json") {
+                let file = format!("{folder}/{name}");
+                if !MAPPED.contains(&file.as_str()) {
+                    unmapped.push(file);
+                }
+            }
+        }
+    }
+    unmapped.sort();
+    assert!(
+        unmapped.is_empty(),
+        "fixture file(s) without a runner in tests/spec_fixtures.rs: {}",
+        unmapped.join(", ")
+    );
+}
+
 #[test]
 fn sync_plan() {
     run("sync/plan.json", |i| {

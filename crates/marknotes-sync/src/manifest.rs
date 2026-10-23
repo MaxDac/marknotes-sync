@@ -34,7 +34,7 @@ fn as_millis(v: &Value) -> Option<i64> {
 }
 
 /// Parses a manifest; `None` when it is not JSON, has a newer `format`, or lacks `deviceId`, `updatedAt` or an
-/// entry field. Unknown keys are ignored and a missing `files` key means no files.
+/// entry field. Unknown keys are ignored and a missing `files` key means no files (`files: null` is unreadable).
 pub fn parse_manifest(text: &str) -> Option<Manifest> {
     let obj = serde_json::from_str::<Value>(text).ok()?;
     let obj = obj.as_object()?;
@@ -46,7 +46,7 @@ pub fn parse_manifest(text: &str) -> Option<Manifest> {
     let updated_at = as_millis(obj.get("updatedAt")?)?;
     let mut files = HashMap::new();
     match obj.get("files") {
-        None | Some(Value::Null) => {}
+        None => {}
         Some(Value::Object(raw)) => {
             for (path, e) in raw {
                 let e = e.as_object()?;
