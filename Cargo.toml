@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/marknotes-sync", "uniffi-bindgen"]
+
+[workspace.package]
+version = "0.1.0-rc.1"
+edition = "2021"
+rust-version = "1.85"
+repository = "https://github.com/MaxDac/marknotes-sync"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

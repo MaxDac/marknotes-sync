@@ -1,0 +1,34 @@
+{
+  "name": "@marknotes/sync",
+  "version": "0.1.0-rc.1",
+  "description": "Shared sync core of the MarkNotes apps (WebAssembly)",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "generated/marknotes_sync.js",
+    "generated/wasm-base64.js"
+  ],
+  "sideEffects": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/fixtures.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MaxDac/marknotes-sync.git",
+    "directory": "bindings/npm"
+  },
+  "private": true
+}
