@@ -1,0 +1,11 @@
+/target/
+/dist/
+node_modules/
+/bindings/npm/generated/
+/bindings/npm/*.tgz
+/bindings/kotlin/build/
+/bindings/kotlin/.gradle/
+/bindings/kotlin/.kotlin/
+/bindings/kotlin/src/main/kotlin/
+/bindings/kotlin/natives/
+

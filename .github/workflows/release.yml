@@ -1,0 +1,96 @@
+name: Release
+
+# Push a tag vX.Y.Z (matching the version in Cargo.toml and bindings/npm/package.json) to publish:
+#   marknotes-sync-X.Y.Z.tgz                 npm package (WebAssembly), for desktop and web
+#   marknotes-sync-kotlin-X.Y.Z.jar          Kotlin bindings (needs JNA), for Android and the JVM
+#   marknotes-sync-android-X.Y.Z.aar         Android libraries (arm64-v8a, x86_64)
+#   marknotes-sync-natives-X.Y.Z.jar         host libraries for JVM tests (Linux, Windows, macOS)
+#   SHA256SUMS
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  natives:
+    name: Host library (${{ matrix.prefix }})
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, prefix: linux-x86-64, lib: libmarknotes_sync.so }
+          - { os: windows-2025, target: x86_64-pc-windows-msvc, prefix: win32-x86-64, lib: marknotes_sync.dll }
+          - { os: macos-15, target: aarch64-apple-darwin, prefix: darwin-aarch64, lib: libmarknotes_sync.dylib }
+          - { os: macos-15, target: x86_64-apple-darwin, prefix: darwin-x86-64, lib: libmarknotes_sync.dylib }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked -p marknotes-sync --features uniffi --target ${{ matrix.target }}
+      - shell: bash
+        run: |
+          mkdir -p "out/${{ matrix.prefix }}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.lib }}" "out/${{ matrix.prefix }}/"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: natives-${{ matrix.prefix }}
+          path: out
+
+  publish:
+    name: Publish release
+    needs: [ci, natives]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check versions
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          grep -q "^version = \"$version\"" Cargo.toml || { echo "::error::Cargo.toml is not $version"; exit 1; }
+          [ "$(jq -r .version bindings/npm/package.json)" = "$version" ] \
+            || { echo "::error::bindings/npm/package.json is not $version"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v6
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: natives-*
+          path: bindings/kotlin/natives/jvm
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: android-libs
+          path: bindings/kotlin/natives/android
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm
+          path: dist
+      - run: scripts/kotlin-bindings.sh
+      - name: Package
+        run: |
+          (cd bindings/kotlin && ./gradlew assemble --console=plain)
+          cp bindings/kotlin/build/libs/*.jar bindings/kotlin/build/libs/*.aar dist/
+          cd dist
+          ls -l
+          for f in "marknotes-sync-$VERSION.tgz" "marknotes-sync-kotlin-$VERSION.jar" \
+                   "marknotes-sync-android-$VERSION.aar" "marknotes-sync-natives-$VERSION.jar"; do
+            [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
+          done
+          unzip -l "marknotes-sync-android-$VERSION.aar" | grep -q "jni/arm64-v8a/libmarknotes_sync.so"
+          unzip -l "marknotes-sync-natives-$VERSION.jar" | grep -q "win32-x86-64/marknotes_sync.dll"
+          sha256sum -- * > SHA256SUMS
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "marknotes-sync $VERSION" --generate-notes

@@ -1,0 +1,62 @@
+// Runs the marknotes-spec sync fixtures through the WebAssembly package, so the JS boundary (field names, null and
+// undefined, numbers) is checked as well as the Rust code. Set MARKNOTES_SPEC_DIR to use another spec checkout.
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+
+import * as sync from "../index.js";
+
+const specDir = process.env.MARKNOTES_SPEC_DIR ?? fileURLToPath(new URL("../../../spec", import.meta.url));
+
+function suite(file, run) {
+  test(file, () => {
+    const { cases } = JSON.parse(readFileSync(join(specDir, "fixtures", file), "utf8"));
+    for (const c of cases) assert.deepEqual(run(c.input), c.expected, `${file} / ${c.name}`);
+  });
+}
+
+suite("sync/plan.json", (i) => sync.plan(i));
+suite("sync/reconcile.json", (i) => sync.reconcile(i));
+suite("sync/multi-drive.json", (i) => {
+  const scheduler = new sync.SyncScheduler(i.driveIds, i.maxPasses);
+  const order = [];
+  for (let id = scheduler.next(); id !== undefined; id = scheduler.next()) {
+    const r = i.reports[order.length];
+    scheduler.report(id, r.localChanges, r.failed);
+    order.push(id);
+  }
+  scheduler.free();
+  return { order };
+});
+suite("manifest/parse.json", (i) => ({ manifest: sync.parseManifest(i.json) }));
+suite("manifest/serialize.json", (i) => ({ json: sync.serializeManifest(i) }));
+suite("manifest/build.json", (i) => ({
+  json: sync.buildManifest(i.records, i.deviceId, i.nowMillis, i.previous) ?? null,
+}));
+suite("merge/merge3.json", (i) => {
+  const result = sync.merge3(i.base, i.local, i.remote);
+  const text = i.choices ? sync.mergeText(result.chunks, i.choices) : result.text;
+  return { text, conflicts: result.conflicts };
+});
+suite("merge/conflict-copy-name.json", (i) => ({ path: sync.conflictCopyName(i.path, i.existingPaths ?? []) }));
+suite("front-matter/read-id.json", (i) => ({ id: sync.readId(i.text) ?? null }));
+suite("front-matter/with-id.json", (i) => ({ text: sync.withId(i.text, i.id) }));
+suite("attachments/is-attachment-path.json", (i) => ({ isAttachment: sync.isAttachmentPath(i.path) }));
+
+test("sha256Hex", () => {
+  assert.equal(sync.sha256Hex(new Uint8Array()), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  assert.equal(sync.sha256Hex(new TextEncoder().encode("abc")),
+    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+});
+
+test("invalid input throws instead of planning", () => {
+  assert.throws(() => sync.plan({ local: "nope", remote: [], records: [] }));
+});
+
+test("large modification times survive the boundary", () => {
+  const remote = { path: "a.md", id: "r", isFolder: false, version: "v", modifiedMillis: 1_700_000_000_000 };
+  const out = sync.plan({ local: [], remote: [remote], records: [] });
+  assert.deepEqual(out.actions, [{ kind: "download", path: "a.md", remote }]);
+});

@@ -1,0 +1,24 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # wasm-bindgen must match the wasm-bindgen-cli pinned in the workflows; bump them together.
+      - dependency-name: wasm-bindgen
+    groups:
+      uniffi:
+        patterns: ["uniffi*"]
+  - package-ecosystem: gradle
+    directory: /bindings/kotlin
+    schedule:
+      interval: weekly
+  - package-ecosystem: gitsubmodule
+    directory: /
+    schedule:
+      interval: weekly
