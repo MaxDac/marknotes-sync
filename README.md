@@ -13,7 +13,8 @@ and tested against its fixtures (the `spec/` submodule).
 The core does no I/O. A sync pass in an app is:
 
 1. List the local tree and the drive (`LocalEntry`, `RemoteEntry`: path, folder flag, mtime, local SHA-256 or remote id and version) and load the
-   records of the previous sync (`SyncRecord`).
+   records of the previous sync (`SyncRecord`). Include the entries that are not synced (other files, hidden files
+   and folders): they keep their folder from being deleted.
 2. `plan(input)` returns ordered actions (`kind`: `createRemoteFolder`, `createLocalFolder`, `uploadNew`,
    `uploadRevision`, `download`, `deleteLocal`, `deleteRemote`, `reconcile`, `record`, `forget`, `error`, ...). Run each one with the app's stores; a
    failing action adds `"<path>: <message>"` to the pass's errors and the pass goes on.

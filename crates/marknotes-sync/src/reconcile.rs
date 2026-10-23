@@ -25,11 +25,8 @@ pub fn reconcile(input: &ReconcileInput) -> ReconcileOutcome {
         Side::Local => &input.remote,
         Side::Remote => &input.local,
     };
-    let copy_text = if front_matter::read_id(loser).is_some() {
-        front_matter::with_id(loser, &input.new_id)
-    } else {
-        loser.clone()
-    };
+    // The copy always gets a fresh valid id, even when the loser had none or an invalid one.
+    let copy_text = front_matter::with_id(loser, &input.new_id);
     ReconcileOutcome::NewestWins {
         winner,
         copy_path: conflict_copy_name(&input.path, &input.existing_paths),
@@ -101,7 +98,7 @@ mod tests {
         // Ties go to the drive.
         let out = reconcile(&input("x\n", "y\n", None, 100));
         assert!(
-            matches!(out, ReconcileOutcome::NewestWins { winner: Side::Remote, ref copy_text, .. } if copy_text == "x\n")
+            matches!(out, ReconcileOutcome::NewestWins { winner: Side::Remote, ref copy_text, .. } if copy_text == "---\nid: m4n5p6q7\n---\nx\n")
         );
     }
 }

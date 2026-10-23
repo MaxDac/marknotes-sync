@@ -25,7 +25,7 @@ checked out as the `spec/` submodule (`git submodule update --init`).
 | Path | Contents |
 | --- | --- |
 | `crates/marknotes-sync/src/` | `plan.rs`, `reconcile.rs`, `merge.rs`, `manifest.rs`, `scheduler.rs`, `paths.rs`, `front_matter.rs`, `hashing.rs`, `model.rs`; `ffi.rs` (UniFFI, feature `uniffi`) and `wasm.rs` (wasm-bindgen, feature `wasm`) |
-| `crates/marknotes-sync/tests/spec_fixtures.rs` | Runs every fixture under `spec/fixtures/` this crate covers (`MARKNOTES_SPEC_DIR` overrides the path) |
+| `crates/marknotes-sync/tests/spec_fixtures.rs` | Runs every fixture under `spec/fixtures/` this crate covers (`MARKNOTES_SPEC_DIR` overrides the path); fails on any file in `sync/`, `manifest/` or `merge/` without a runner |
 | `uniffi-bindgen/` | The UniFFI bindgen binary, pinned to the crate's UniFFI version |
 | `bindings/npm/` | npm package `@marknotes/sync`: `build.mjs` (wasm inlined as base64), hand-written `index.d.ts`, Node fixture tests |
 | `bindings/kotlin/` | Gradle project: tests the generated Kotlin bindings on the JVM and packs the jar, natives jar and AAR |

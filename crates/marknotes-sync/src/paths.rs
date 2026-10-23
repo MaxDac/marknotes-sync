@@ -11,6 +11,50 @@ pub fn compare(a: &str, b: &str) -> Ordering {
     a.encode_utf16().cmp(b.encode_utf16())
 }
 
+/// Unicode simple case folding (`C` and `S` mappings of CaseFolding.txt) of one character: one character to one,
+/// so `ß` stays `ß` and `İ` stays `İ`.
+fn fold_char(c: char) -> char {
+    match c {
+        '\u{00B5}' => '\u{03BC}',
+        '\u{017F}' => 's',
+        '\u{0345}' | '\u{1FBE}' => '\u{03B9}',
+        '\u{03C2}' => '\u{03C3}',
+        '\u{03D0}' => '\u{03B2}',
+        '\u{03D1}' => '\u{03B8}',
+        '\u{03D5}' => '\u{03C6}',
+        '\u{03D6}' => '\u{03C0}',
+        '\u{03F0}' => '\u{03BA}',
+        '\u{03F1}' => '\u{03C1}',
+        '\u{03F5}' => '\u{03B5}',
+        '\u{1C80}' => '\u{0432}',
+        '\u{1C81}' => '\u{0434}',
+        '\u{1C82}' => '\u{043E}',
+        '\u{1C83}' => '\u{0441}',
+        '\u{1C84}' | '\u{1C85}' => '\u{0442}',
+        '\u{1C86}' => '\u{044A}',
+        '\u{1C87}' => '\u{0463}',
+        '\u{1C88}' => '\u{A64B}',
+        '\u{1E9B}' => '\u{1E61}',
+        // Cherokee folds to its uppercase letters.
+        '\u{13A0}'..='\u{13F5}' => c,
+        '\u{13F8}'..='\u{13FD}' => char::from_u32(c as u32 - 8).unwrap_or(c),
+        '\u{AB70}'..='\u{ABBF}' => char::from_u32(c as u32 - 0xAB70 + 0x13A0).unwrap_or(c),
+        _ => {
+            let mut lower = c.to_lowercase();
+            match (lower.next(), lower.next()) {
+                (Some(l), None) => l,
+                _ => c,
+            }
+        }
+    }
+}
+
+/// The key that identifies a sync path: Dropbox and OneDrive ignore case, so paths that differ only in case are
+/// the same path.
+pub fn fold_case(path: &str) -> String {
+    path.chars().map(fold_char).collect()
+}
+
 pub fn depth(path: &str) -> usize {
     if path.is_empty() {
         0
@@ -169,6 +213,21 @@ mod tests {
         // U+FF5E sorts after U+1F600 in UTF-16 (surrogates are 0xD800..) but before it by code point.
         assert_eq!(compare("\u{1F600}", "\u{FF5E}"), Ordering::Less);
         assert_eq!(compare("B", "a"), Ordering::Less);
+    }
+
+    #[test]
+    fn simple_case_folding() {
+        assert_eq!(fold_case("Work/Über.md"), fold_case("work/über.MD"));
+        assert_ne!(fold_case("Straße.md"), fold_case("STRASSE.md"));
+        assert_eq!(fold_case("ẞ"), "ß");
+        assert_eq!(fold_case("ſ"), "s");
+        assert_eq!(fold_case("ς"), fold_case("Σ"));
+        assert_eq!(fold_case("µ"), fold_case("Μ"));
+        assert_eq!(fold_case("İ"), "İ");
+        assert_eq!(fold_case("\u{AB70}"), "\u{13A0}");
+        assert_eq!(fold_case("\u{13A0}"), "\u{13A0}");
+        assert_eq!(fold_case("\u{13F8}"), "\u{13F0}");
+        assert_eq!(fold_case("\u{212A}"), "k");
     }
 
     #[test]
