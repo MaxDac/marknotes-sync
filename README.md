@@ -91,3 +91,7 @@ scripts/android-libs.sh                                    # Android .so files
 ```
 
 See [AGENTS.md](AGENTS.md) for the layout, rules and release process.
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).

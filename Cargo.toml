@@ -3,9 +3,10 @@ resolver = "2"
 members = ["crates/marknotes-sync", "uniffi-bindgen"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.85"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/MaxDac/marknotes-sync"
 
 [profile.release]
