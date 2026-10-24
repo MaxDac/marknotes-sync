@@ -1,0 +1,32 @@
+{
+  "name": "@marknotes/sync",
+  "version": "0.3.0",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "main": "./bindings/npm/index.js",
+  "types": "./bindings/npm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./bindings/npm/index.d.ts",
+      "default": "./bindings/npm/index.js"
+    }
+  },
+  "files": [
+    "bindings/npm/index.js",
+    "bindings/npm/recover.js",
+    "bindings/npm/index.d.ts",
+    "bindings/npm/generated/marknotes_sync.js",
+    "bindings/npm/generated/wasm-base64.js"
+  ],
+  "scripts": {
+    "prepare": "node bindings/npm/build.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MaxDac/marknotes-sync.git"
+  }
+}

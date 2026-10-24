@@ -529,6 +529,8 @@ fn reconcile_input(
         base: base.map(str::to_string),
         existing_paths: vec!["Work/Plan.md".into()],
         new_id: NEW_ID.into(),
+        conflict_copy_intent: None,
+        existing_copy: None,
     }
 }
 
@@ -586,14 +588,20 @@ fn clean_merge_with_one_side_unchanged_takes_the_other() {
 /// the newest wins.
 #[test]
 fn different_additions_to_an_empty_base_go_to_the_newest() {
-    assert_eq!(
-        reconcile(&reconcile_input("x\n", 2, "y\n", 1, Some(""))),
-        ReconcileOutcome::NewestWins {
-            winner: Side::Local,
-            copy_path: "Work/Plan (conflicted copy).md".into(),
-            copy_text: "---\nid: m4n5p6q7\n---\ny\n".into(),
-        }
-    );
+    let ReconcileOutcome::NewestWins {
+        winner,
+        copy_path,
+        copy_text,
+        copy_modified_millis,
+        ..
+    } = reconcile(&reconcile_input("x\n", 2, "y\n", 1, Some("")))
+    else {
+        panic!("expected conflict");
+    };
+    assert_eq!(winner, Side::Local);
+    assert_eq!(copy_path, "Work/Plan (conflicted copy).md");
+    assert_eq!(copy_text, "---\nid: m4n5p6q7\n---\ny\n");
+    assert_eq!(copy_modified_millis, 1);
 }
 
 /// note-format.md, "Sync" > "Conflicts", step 3: the newest version wins by modification time; on a tie the drive
@@ -659,14 +667,20 @@ fn the_copy_holds_the_drive_text_when_the_drive_loses() {
         1,
         None,
     ));
-    assert_eq!(
-        out,
-        ReconcileOutcome::NewestWins {
-            winner: Side::Local,
-            copy_path: "Work/Plan (conflicted copy).md".into(),
-            copy_text: "---\nid: m4n5p6q7\n---\nremote\n".into(),
-        }
-    );
+    let ReconcileOutcome::NewestWins {
+        winner,
+        copy_path,
+        copy_text,
+        copy_modified_millis,
+        ..
+    } = out
+    else {
+        panic!("expected conflict");
+    };
+    assert_eq!(winner, Side::Local);
+    assert_eq!(copy_path, "Work/Plan (conflicted copy).md");
+    assert_eq!(copy_text, "---\nid: m4n5p6q7\n---\nremote\n");
+    assert_eq!(copy_modified_millis, 1);
 }
 
 /// note-format.md, "Sync" > "Conflicts", step 3: the copy path is next to the note and free under simple case

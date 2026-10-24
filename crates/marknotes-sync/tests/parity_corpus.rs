@@ -15,6 +15,7 @@
 //! `Int`. Inputs the bindings reject by design are tested in `bindings/npm/test/boundary.test.mjs` and the Kotlin
 //! `BindingsTest`.
 
+mod sim;
 mod support;
 
 use std::collections::{BTreeMap, HashMap};
@@ -275,6 +276,8 @@ fn reconcile_op() -> BoxedStrategy<Case> {
                     base: has_base.then_some(base),
                     existing_paths,
                     new_id,
+                    conflict_copy_intent: None,
+                    existing_copy: None,
                 };
                 let expected = to_json(&reconcile(&input));
                 Some((to_json(&input), expected))
@@ -673,6 +676,7 @@ fn write_parity_corpus() {
     let count = cases();
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/parity");
     std::fs::create_dir_all(&dir).unwrap();
+    sim::safety::write_observations(&dir);
     let mut index = serde_json::Map::new();
     let mut total = 0;
     for op in ops() {

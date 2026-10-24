@@ -2,8 +2,9 @@
 //! otherwise keep the newest version and save the other one as a conflicted copy.
 
 use crate::front_matter;
+use crate::hashing::sha256_hex;
 use crate::merge::merge3;
-use crate::model::{ReconcileInput, ReconcileOutcome, Side};
+use crate::model::{ConflictCopyIntent, ReconcileInput, ReconcileOutcome, Side};
 use crate::paths::conflict_copy_name;
 
 pub fn reconcile(input: &ReconcileInput) -> ReconcileOutcome {
@@ -25,13 +26,76 @@ pub fn reconcile(input: &ReconcileInput) -> ReconcileOutcome {
         Side::Local => &input.remote,
         Side::Remote => &input.local,
     };
-    // The copy always gets a fresh valid id, even when the loser had none or an invalid one.
-    let copy_text = front_matter::with_id(loser, &input.new_id);
+    let copy_modified_millis = match winner {
+        Side::Local => input.remote_entry.modified_millis,
+        Side::Remote => input.local_modified_millis,
+    };
+    let mut existing_paths = input.existing_paths.clone();
+    if let Some(copy) = &input.existing_copy {
+        existing_paths.push(copy.path.clone());
+    }
+    let mut intent = ConflictCopyIntent {
+        path: input.path.clone(),
+        local_hash: sha256_hex(input.local.as_bytes()),
+        remote_hash: sha256_hex(input.remote.as_bytes()),
+        remote_id: input.remote_entry.id.clone(),
+        remote_version: input.remote_entry.version.clone(),
+        local_modified_millis: input.local_modified_millis,
+        remote_modified_millis: input.remote_entry.modified_millis,
+        base_hash: input.base.as_ref().map(|b| sha256_hex(b.as_bytes())),
+        new_id: input.new_id.clone(),
+        copy_path: conflict_copy_name(&input.path, &existing_paths),
+        copy_modified_millis,
+    };
+    let mut reuse_copy = false;
+    if let Some(saved) = &input.conflict_copy_intent {
+        let mut expected = intent.clone();
+        expected.new_id = saved.new_id.clone();
+        expected.copy_path = saved.copy_path.clone();
+        let expected_text = front_matter::with_id(loser, &saved.new_id);
+        let valid_path = valid_copy_path(&input.path, &saved.copy_path);
+        let verified_copy = input.existing_copy.as_ref().is_some_and(|copy| {
+            copy.path == saved.copy_path
+                && copy.text == expected_text
+                && copy.modified_millis == saved.copy_modified_millis
+        });
+        let absent = input.existing_copy.is_none()
+            && !input
+                .existing_paths
+                .iter()
+                .any(|p| crate::paths::fold_case(p) == crate::paths::fold_case(&saved.copy_path));
+        if *saved == expected
+            && front_matter::is_valid_id(&saved.new_id)
+            && valid_path
+            && (verified_copy || absent)
+        {
+            intent = saved.clone();
+            reuse_copy = verified_copy;
+        }
+    }
+    let copy_text = front_matter::with_id(loser, &intent.new_id);
     ReconcileOutcome::NewestWins {
         winner,
-        copy_path: conflict_copy_name(&input.path, &input.existing_paths),
+        copy_path: intent.copy_path.clone(),
         copy_text,
+        copy_modified_millis,
+        conflict_copy_intent: intent,
+        reuse_copy,
     }
+}
+
+fn valid_copy_path(path: &str, copy: &str) -> bool {
+    let first = conflict_copy_name(path, &[]);
+    if copy == first {
+        return true;
+    }
+    let file = crate::paths::name(path);
+    let ext = file.rfind('.').map_or("", |i| &file[i..]);
+    let prefix = first.strip_suffix(ext).unwrap_or(&first);
+    copy.strip_prefix(&format!("{prefix} "))
+        .and_then(|suffix| suffix.strip_suffix(ext))
+        .and_then(|n| n.parse::<u32>().ok().map(|value| (n, value)))
+        .is_some_and(|(n, value)| value >= 2 && n == value.to_string())
 }
 
 #[cfg(test)]
@@ -55,6 +119,8 @@ mod tests {
             base: base.map(str::to_string),
             existing_paths: vec!["Work/Plan.md".into()],
             new_id: "m4n5p6q7".into(),
+            conflict_copy_intent: None,
+            existing_copy: None,
         }
     }
 
@@ -87,14 +153,20 @@ mod tests {
             Some("---\nid: k7f3q2xa\n---\nbase\n"),
             101,
         ));
-        assert_eq!(
-            out,
-            ReconcileOutcome::NewestWins {
-                winner: Side::Local,
-                copy_path: "Work/Plan (conflicted copy).md".into(),
-                copy_text: "---\nid: m4n5p6q7\n---\nremote\n".into(),
-            }
-        );
+        let ReconcileOutcome::NewestWins {
+            winner,
+            copy_path,
+            copy_text,
+            copy_modified_millis,
+            ..
+        } = out
+        else {
+            panic!("expected conflict");
+        };
+        assert_eq!(winner, Side::Local);
+        assert_eq!(copy_path, "Work/Plan (conflicted copy).md");
+        assert_eq!(copy_text, "---\nid: m4n5p6q7\n---\nremote\n");
+        assert_eq!(copy_modified_millis, 100);
         // Ties go to the drive.
         let out = reconcile(&input("x\n", "y\n", None, 100));
         assert!(

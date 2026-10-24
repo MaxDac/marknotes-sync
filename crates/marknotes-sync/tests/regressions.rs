@@ -149,6 +149,8 @@ fn d3_build_manifest_keeps_the_last_of_duplicate_records() {
         remote_version: "v".into(),
         local_hash: hash.into(),
         synced_at: 1,
+
+        local_deleted: false,
     };
     let text = build_manifest(&[record("h1"), record("h2")], "d", 5, None).unwrap();
     assert_eq!(parse_manifest(&text).unwrap().files["a.md"].sha256, "h2");

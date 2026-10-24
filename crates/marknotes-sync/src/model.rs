@@ -39,6 +39,8 @@ pub struct SyncRecord {
     pub remote_version: String,
     pub local_hash: String,
     pub synced_at: i64,
+    #[serde(default)]
+    pub local_deleted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -63,17 +65,33 @@ pub struct SyncInput {
     rename_all_fields = "camelCase"
 )]
 pub enum Action {
+    /// Rename an unchanged stale local spelling, without replacing another entry, then migrate this drive's state.
+    RenameLocal {
+        path: String,
+        to_path: String,
+        is_folder: bool,
+        remote: RemoteEntry,
+        sha256: Option<String>,
+    },
+    /// Conditionally rename an unchanged stale remote spelling without replacing another entry.
+    RenameRemote {
+        path: String,
+        to_path: String,
+        is_folder: bool,
+        remote: RemoteEntry,
+        sha256: Option<String>,
+    },
     /// Report an error for `path` (nothing else is done for it).
     Error { path: String, message: String },
     /// Save a folder record.
     RecordFolder { path: String, remote_id: String },
-    /// Create the folder on the drive, then save a folder record with the returned id.
+    /// Create the folder on the drive only if absent, then save a folder record with the returned id.
     CreateRemoteFolder { path: String },
     /// Create the folder locally, then save a folder record.
     CreateLocalFolder { path: String, remote_id: String },
     /// Delete the record and the base copy of `path`.
     Forget { path: String },
-    /// Upload the local file as a new drive file, then record it (and keep a base copy of notes).
+    /// Create-only upload of the local file, then record it (and keep a base copy of notes).
     UploadNew { path: String },
     /// Upload the local file as a new revision of `remote`, then record it (and keep a base copy of notes).
     UploadRevision { path: String, remote: RemoteEntry },
@@ -93,7 +111,8 @@ pub enum Action {
     DeleteRemote { path: String, remote: RemoteEntry },
     /// Delete the local folder tree, then delete the records of `forget` and the base copies under `path`.
     DeleteLocalFolder { path: String, forget: Vec<String> },
-    /// Delete the drive folder, then delete the records of `forget` and the base copies under `path`.
+    /// Atomically delete an empty drive folder without deleting descendants, then forget its record.
+    /// An adapter without this guarantee must report a step error and retain the record.
     DeleteRemoteFolder {
         path: String,
         remote: RemoteEntry,
@@ -139,6 +158,38 @@ pub struct ReconcileInput {
     pub existing_paths: Vec<String>,
     /// A fresh note id for the conflicted copy.
     pub new_id: String,
+    #[serde(default)]
+    pub conflict_copy_intent: Option<ConflictCopyIntent>,
+    #[serde(default)]
+    pub existing_copy: Option<ExistingCopy>,
+}
+
+/// Durable identity of one conflict and its reserved copy. Persist before creating the copy.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictCopyIntent {
+    pub path: String,
+    pub local_hash: String,
+    pub remote_hash: String,
+    pub remote_id: String,
+    pub remote_version: String,
+    pub local_modified_millis: i64,
+    pub remote_modified_millis: i64,
+    pub base_hash: Option<String>,
+    pub new_id: String,
+    pub copy_path: String,
+    pub copy_modified_millis: i64,
+}
+
+/// The exact saved copy read by the executor when replaying an intent.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+#[serde(rename_all = "camelCase")]
+pub struct ExistingCopy {
+    pub path: String,
+    pub text: String,
+    pub modified_millis: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -148,6 +199,8 @@ pub struct ReconcileInput {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
+// Keep exported records flat: UniFFI shares this layout with Kotlin rather than exposing Rust-only boxes.
+#[allow(clippy::large_enum_variant)]
 pub enum ReconcileOutcome {
     /// Both sides hold the same text: record it.
     Same,
@@ -159,5 +212,8 @@ pub enum ReconcileOutcome {
         winner: Side,
         copy_path: String,
         copy_text: String,
+        copy_modified_millis: i64,
+        conflict_copy_intent: ConflictCopyIntent,
+        reuse_copy: bool,
     },
 }

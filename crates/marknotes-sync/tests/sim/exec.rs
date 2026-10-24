@@ -5,8 +5,9 @@
 use std::collections::BTreeMap;
 
 use marknotes_sync::{
-    build_manifest, paths, reconcile, scheduler::DEFAULT_MAX_PASSES, Action, LocalEntry,
-    ReconcileInput, ReconcileOutcome, RemoteEntry, Scheduler, Side, SyncInput, SyncRecord,
+    build_manifest, paths, reconcile, scheduler::DEFAULT_MAX_PASSES, Action, ConflictCopyIntent,
+    ExistingCopy, LocalEntry, ReconcileInput, ReconcileOutcome, RemoteEntry, Scheduler, Side,
+    SyncInput, SyncRecord,
 };
 
 use super::device::{InFlight, Node, PendingConflict};
@@ -40,6 +41,8 @@ pub struct SessionOutcome {
 
 pub fn kind(a: &Action) -> &'static str {
     match a {
+        Action::RenameLocal { .. } => "renameLocal",
+        Action::RenameRemote { .. } => "renameRemote",
         Action::Error { .. } => "error",
         Action::RecordFolder { .. } => "recordFolder",
         Action::CreateRemoteFolder { .. } => "createRemoteFolder",
@@ -60,6 +63,8 @@ pub fn kind(a: &Action) -> &'static str {
 pub fn path_of(a: &Action) -> &str {
     match a {
         Action::Error { path, .. }
+        | Action::RenameLocal { path, .. }
+        | Action::RenameRemote { path, .. }
         | Action::RecordFolder { path, .. }
         | Action::CreateRemoteFolder { path }
         | Action::CreateLocalFolder { path, .. }
@@ -116,6 +121,7 @@ struct Ctx {
     drive: usize,
     drive_name: String,
     complete: bool,
+    remote_listed: Vec<RemoteEntry>,
 }
 
 /// Syncs every drive of `dev` with a new scheduler, as at the start of each sync session.
@@ -176,6 +182,23 @@ pub fn sync_session(w: &mut World, dev: usize, r: usize) -> Result<SessionOutcom
             return Ok(out);
         }
     };
+    match step(w, dev, "flag local deletions", true, |w| {
+        for records in w.devices[dev].durable.records.values_mut() {
+            let values: Vec<_> = records.values().cloned().collect();
+            for path in marknotes_sync::local_deletions(&local, &values) {
+                records.get_mut(&path).unwrap().local_deleted = true;
+            }
+        }
+        Ok(())
+    }) {
+        Ok(()) => {}
+        Err(Stop::Crash) => return Err(Crashed),
+        Err(Stop::Error(e)) | Err(Stop::Skip(e)) => {
+            out.failed = true;
+            out.errors.push(e);
+            return Ok(out);
+        }
+    }
     if !listing.complete && !w.bugs.trust_incomplete_listing {
         out.failed = true;
         out.errors.push("listing incomplete".into());
@@ -202,6 +225,7 @@ pub fn sync_session(w: &mut World, dev: usize, r: usize) -> Result<SessionOutcom
         drive: r,
         drive_name: drive_name.clone(),
         complete: listing.complete,
+        remote_listed: listing.entries.clone(),
     };
     for (i, action) in plan.iter().enumerate() {
         let k = kind(action);
@@ -242,6 +266,36 @@ pub fn sync_session(w: &mut World, dev: usize, r: usize) -> Result<SessionOutcom
         }
     }
     out.actions = plan;
+    let complete_intents: Vec<_> = w.devices[dev]
+        .durable
+        .copy_intents
+        .iter()
+        .filter_map(|(key, intent)| {
+            if key.0 != drive_name {
+                return None;
+            }
+            let d = &w.devices[dev];
+            let (bytes, _) = d.file(&intent.copy_path)?;
+            let record = d.record(&drive_name, &intent.copy_path)?;
+            let remote = w.drives[r].entry(&intent.copy_path)?;
+            (record.local_hash == sha_hex(bytes)
+                && record.remote_id == remote.id
+                && record.remote_version == remote.version)
+                .then(|| key.clone())
+        })
+        .collect();
+    if !complete_intents.is_empty() {
+        match step(w, dev, "clear copy intent", true, |w| {
+            for key in complete_intents {
+                w.devices[dev].durable.copy_intents.remove(&key);
+            }
+            Ok(())
+        }) {
+            Ok(()) => {}
+            Err(Stop::Crash) => return Err(Crashed),
+            Err(Stop::Error(e)) | Err(Stop::Skip(e)) => out.errors.push(e),
+        }
+    }
 
     // The manifest, from the records only (so only successful steps), uploaded only when it changed.
     let records = w.devices[dev].records(&drive_name);
@@ -266,7 +320,7 @@ pub fn sync_session(w: &mut World, dev: usize, r: usize) -> Result<SessionOutcom
         .durable
         .pending_conflicts
         .iter()
-        .any(|c| d.file(&c.note_path).is_none() || d.file(&c.copy_path).is_none());
+        .any(|c| d.file(&c.note_path).is_none());
     if stale {
         let pruned = step(w, dev, "prune conflicts", true, |w| {
             let d = &mut w.devices[dev];
@@ -274,7 +328,7 @@ pub fn sync_session(w: &mut World, dev: usize, r: usize) -> Result<SessionOutcom
             let present = |p: &str| matches!(files.get(p), Some(Node::File { .. }));
             d.durable
                 .pending_conflicts
-                .retain(|c| present(&c.note_path) && present(&c.copy_path));
+                .retain(|c| present(&c.note_path));
             Ok(())
         });
         if let Err(Stop::Crash) = pruned {
@@ -284,7 +338,15 @@ pub fn sync_session(w: &mut World, dev: usize, r: usize) -> Result<SessionOutcom
     w.devices[dev].volatile = None;
 
     let disturbed = w.hooks_fired != fired_before || w.faults_hit.len() != faults_before;
-    if w.check_idempotence && !disturbed && out.errors.is_empty() && out.skipped.is_empty() {
+    if w.check_idempotence
+        && !disturbed
+        && out.errors.is_empty()
+        && out.skipped.is_empty()
+        && !out
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::RenameLocal { .. } | Action::RenameRemote { .. }))
+    {
         let left = w.pending_actions(dev, r);
         if !left.is_empty() {
             w.oracle.violate(
@@ -408,6 +470,7 @@ fn file_record(path: &str, remote: &RemoteEntry, hash: String, now: i64) -> Sync
         remote_version: remote.version.clone(),
         local_hash: hash,
         synced_at: now,
+        local_deleted: false,
     }
 }
 
@@ -429,6 +492,13 @@ fn run(
     let (dev, r) = (ctx.dev, ctx.drive);
     let now = w.now(dev);
     match action {
+        Action::RenameLocal { .. } | Action::RenameRemote { .. } => {
+            run_rename(w, ctx, action, listed)?;
+            if matches!(action, Action::RenameLocal { .. }) {
+                out.local_changes += 1;
+            }
+            Ok(())
+        }
         Action::Error { message, .. } => Err(Stop::Error(message.clone())),
         Action::RecordFolder { path, remote_id } => save_folder_record(w, ctx, path, remote_id),
         Action::CreateRemoteFolder { path } => {
@@ -561,74 +631,33 @@ fn run(
             forget(w, ctx, vec![path.clone()], None)
         }
         Action::DeleteLocalFolder { path, forget: f } => {
-            if !w.bugs.no_recheck {
-                let d = &w.devices[dev];
-                let inside = |p: &String| p == path || paths::is_ancestor(path, p);
-                for (p, n) in d.durable.files.iter().filter(|(p, _)| inside(p)) {
-                    let same = match (listed.get(p), n) {
-                        (Some(e), Node::File { bytes, .. }) => {
-                            e.sha256.as_deref() == Some(&sha_hex(bytes))
-                        }
-                        (Some(e), Node::Folder) => e.is_folder,
-                        (None, _) => false,
-                    };
-                    if !same {
-                        return Err(Stop::Skip(format!("{p} changed since the listing")));
-                    }
-                }
-            }
             let p = path.clone();
-            let complete = ctx.complete;
             step(w, dev, "delete local folder", true, |w| {
-                for (q, n) in w.devices[dev].remove_tree(&p) {
-                    if let Node::File { bytes, .. } = n {
-                        if paths::is_synced_entry(&q, false) {
-                            w.oracle.check_deletion(
-                                "delete local folder",
-                                dev,
-                                r,
-                                &q,
-                                &bytes,
-                                complete,
-                            );
-                        }
-                    }
+                if w.devices[dev]
+                    .durable
+                    .files
+                    .keys()
+                    .any(|q| paths::is_ancestor(&p, q))
+                {
+                    return Err("local folder is not empty".into());
                 }
+                w.devices[dev].durable.files.remove(&p);
                 Ok(())
             })?;
             out.local_changes += 1;
-            forget(w, ctx, f.clone(), Some(path.clone()))
+            forget(w, ctx, f.clone(), None)
         }
         Action::DeleteRemoteFolder {
-            path, forget: f, ..
+            path,
+            remote,
+            forget: f,
         } => {
             let p = path.clone();
-            let complete = ctx.complete;
+            let id = remote.id.clone();
             step(w, dev, "drive delete folder", true, |w| {
-                let folded = paths::fold_case(&p);
-                let inside: Vec<(String, Vec<u8>)> = w.drives[r]
-                    .entries()
-                    .filter(|e| {
-                        !e.is_folder && paths::is_ancestor(&folded, &paths::fold_case(&e.path))
-                    })
-                    .map(|e| (e.path.clone(), e.bytes.clone()))
-                    .collect();
-                w.drives[r].delete_folder(&p)?;
-                for (q, bytes) in inside {
-                    if paths::is_synced_entry(&q, false) {
-                        w.oracle.check_deletion(
-                            "drive delete folder",
-                            dev,
-                            r,
-                            &q,
-                            &bytes,
-                            complete,
-                        );
-                    }
-                }
-                Ok(())
+                w.drives[r].delete_empty_folder(&p, &id)
             })?;
-            forget(w, ctx, f.clone(), Some(path.clone()))
+            forget(w, ctx, f.clone(), None)
         }
         Action::Reconcile {
             path,
@@ -636,6 +665,90 @@ fn run(
             has_record,
         } => run_reconcile(w, ctx, path, remote, *has_record, listed, out),
     }
+}
+
+fn run_rename(
+    w: &mut World,
+    ctx: &Ctx,
+    action: &Action,
+    listed: &BTreeMap<String, LocalEntry>,
+) -> Result<(), Stop> {
+    let (path, to_path, local) = match action {
+        Action::RenameLocal { path, to_path, .. } => (path.clone(), to_path.clone(), true),
+        Action::RenameRemote { path, to_path, .. } => (path.clone(), to_path.clone(), false),
+        _ => unreachable!(),
+    };
+    let dev = ctx.dev;
+    let metadata_only =
+        local && w.devices[dev].node(&path).is_none() && w.devices[dev].node(&to_path).is_some();
+    if local {
+        let source = if metadata_only { &to_path } else { &path };
+        let inside = |p: &str| p == source || paths::is_ancestor(source, p);
+        let current = w.devices[dev].list();
+        let current_paths: Vec<_> = current
+            .iter()
+            .filter(|e| inside(&e.path))
+            .map(|e| &e.path)
+            .collect();
+        let expected_paths: Vec<_> = listed.keys().filter(|p| inside(p)).collect();
+        if current_paths != expected_paths
+            || (!metadata_only && w.devices[dev].node(&to_path).is_some())
+        {
+            return Err(Stop::Skip("rename tree changed".into()));
+        }
+        for p in expected_paths {
+            recheck(w, dev, p, listed)?;
+        }
+    }
+    step(
+        w,
+        dev,
+        if local {
+            "rename local"
+        } else {
+            "rename remote"
+        },
+        true,
+        |w| {
+            if local && !metadata_only {
+                let entries = w.devices[dev].remove_tree(&path);
+                for (p, n) in entries {
+                    w.devices[dev]
+                        .durable
+                        .files
+                        .insert(format!("{to_path}{}", &p[path.len()..]), n);
+                }
+            } else if !local {
+                w.drives[ctx.drive].rename_case(&path, &to_path, &ctx.remote_listed)?;
+            }
+            // Rename and state migration are a durable transaction in the reference store.
+            let d = &mut w.devices[dev].durable;
+            if let Some(records) = d.records.get_mut(&ctx.drive_name) {
+                let old: Vec<_> = records
+                    .keys()
+                    .filter(|p| *p == &path || paths::is_ancestor(&path, p))
+                    .cloned()
+                    .collect();
+                for p in old {
+                    let mut record = records.remove(&p).unwrap();
+                    record.path = format!("{to_path}{}", &p[path.len()..]);
+                    records.insert(record.path.clone(), record);
+                }
+            }
+            if let Some(bases) = d.bases.get_mut(&ctx.drive_name) {
+                let old: Vec<_> = bases
+                    .keys()
+                    .filter(|p| *p == &path || paths::is_ancestor(&path, p))
+                    .cloned()
+                    .collect();
+                for p in old {
+                    let base = bases.remove(&p).unwrap();
+                    bases.insert(format!("{to_path}{}", &p[path.len()..]), base);
+                }
+            }
+            Ok(())
+        },
+    )
 }
 
 /// The hash recorded for an upload: of the bytes actually uploaded (the buggy executor records the listing's).
@@ -662,6 +775,8 @@ fn save_folder_record(w: &mut World, ctx: &Ctx, path: &str, remote_id: &str) -> 
         remote_version: String::new(),
         local_hash: String::new(),
         synced_at: w.now(dev),
+
+        local_deleted: false,
     };
     step(w, dev, "save record", true, |w| {
         w.devices[dev]
@@ -699,6 +814,20 @@ fn run_reconcile(
     };
     let existing_paths: Vec<String> = w.devices[dev].durable.files.keys().cloned().collect();
     let new_id = w.new_id();
+    let conflict_copy_intent = w.devices[dev]
+        .durable
+        .copy_intents
+        .get(&(ctx.drive_name.clone(), path.to_string()))
+        .cloned();
+    let existing_copy = conflict_copy_intent.as_ref().and_then(|c| {
+        w.devices[dev]
+            .file(&c.copy_path)
+            .map(|(bytes, modified_millis)| ExistingCopy {
+                path: c.copy_path.clone(),
+                text: String::from_utf8_lossy(bytes).into_owned(),
+                modified_millis,
+            })
+    });
     let outcome = reconcile(&ReconcileInput {
         path: path.to_string(),
         local: local_text.clone(),
@@ -708,6 +837,8 @@ fn run_reconcile(
         base: base.clone(),
         existing_paths,
         new_id,
+        conflict_copy_intent,
+        existing_copy,
     });
     let now = w.now(dev);
     match outcome {
@@ -752,13 +883,13 @@ fn run_reconcile(
             winner,
             copy_path,
             copy_text,
+            copy_modified_millis,
+            conflict_copy_intent,
+            reuse_copy,
         } => {
             w.log(format!("  {winner:?} wins {path}, copy {copy_path}"));
-            let loser_mtime = match winner {
-                Side::Local => entry.modified_millis,
-                Side::Remote => local_mtime,
-            };
-            if !w.bugs.copy_after_overwrite {
+            let loser_mtime = copy_modified_millis;
+            if !w.bugs.copy_after_overwrite && !reuse_copy {
                 write_copy(
                     w,
                     ctx,
@@ -767,6 +898,7 @@ fn run_reconcile(
                     &copy_text,
                     loser_mtime,
                     base.clone(),
+                    conflict_copy_intent.clone(),
                     out,
                 )?;
             }
@@ -802,10 +934,32 @@ fn run_reconcile(
                     )?;
                 }
             }
-            if w.bugs.copy_after_overwrite {
-                write_copy(w, ctx, path, &copy_path, &copy_text, loser_mtime, base, out)?;
+            if w.bugs.copy_after_overwrite && !reuse_copy {
+                write_copy(
+                    w,
+                    ctx,
+                    path,
+                    &copy_path,
+                    &copy_text,
+                    loser_mtime,
+                    base,
+                    conflict_copy_intent,
+                    out,
+                )?;
             }
             let (cp, ct) = (copy_path.clone(), copy_text.clone());
+            let already_uploaded = w.devices[dev]
+                .record(&ctx.drive_name, &copy_path)
+                .zip(w.drives[r].entry(&copy_path))
+                .is_some_and(|(record, remote)| {
+                    record.remote_id == remote.id
+                        && record.remote_version == remote.version
+                        && record.local_hash == sha_hex(copy_text.as_bytes())
+                        && remote.bytes == copy_text.as_bytes()
+                });
+            if already_uploaded {
+                return Ok(());
+            }
             let overwrite = w.bugs.upload_new_overwrites;
             let uploaded = step(w, dev, "upload copy", true, |w| {
                 w.drives[r].create_file(&cp, ct.into_bytes(), loser_mtime, overwrite)
@@ -829,12 +983,32 @@ fn write_copy(
     copy_text: &str,
     mtime: i64,
     base: Option<String>,
+    intent: ConflictCopyIntent,
     out: &mut SessionOutcome,
 ) -> Result<(), Stop> {
     let dev = ctx.dev;
     if w.devices[dev].node(copy_path).is_some() {
         return Err(Stop::Skip(format!("{copy_path} appeared during the sync")));
     }
+    let conflict = PendingConflict {
+        drive: ctx.drive_name.clone(),
+        note_path: path.to_string(),
+        copy_path: copy_path.to_string(),
+        base,
+        intent,
+    };
+    step(w, dev, "save pending conflict", true, |w| {
+        w.devices[dev].durable.copy_intents.insert(
+            (conflict.drive.clone(), conflict.note_path.clone()),
+            conflict.intent.clone(),
+        );
+        w.devices[dev]
+            .durable
+            .pending_conflicts
+            .retain(|c| c.drive != conflict.drive || c.note_path != conflict.note_path);
+        w.devices[dev].durable.pending_conflicts.push(conflict);
+        Ok(())
+    })?;
     let (cp, ct) = (copy_path.to_string(), copy_text.to_string());
     step(w, dev, "write copy", true, |w| {
         w.devices[dev].write(&cp, ct.into_bytes(), mtime);
@@ -845,14 +1019,5 @@ fn write_copy(
         other => other,
     })?;
     out.local_changes += 1;
-    let conflict = PendingConflict {
-        drive: ctx.drive_name.clone(),
-        note_path: path.to_string(),
-        copy_path: copy_path.to_string(),
-        base,
-    };
-    step(w, dev, "save pending conflict", true, |w| {
-        w.devices[dev].durable.pending_conflicts.push(conflict);
-        Ok(())
-    })
+    Ok(())
 }

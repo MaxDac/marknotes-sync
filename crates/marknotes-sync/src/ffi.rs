@@ -5,7 +5,12 @@ use std::sync::{Arc, Mutex};
 
 use crate::manifest::Manifest;
 use crate::merge::{ConflictChoice, MergeChunk, MergeResult};
-use crate::model::{ReconcileInput, ReconcileOutcome, SyncInput, SyncPlan, SyncRecord};
+use crate::model::{LocalEntry, ReconcileInput, ReconcileOutcome, SyncInput, SyncPlan, SyncRecord};
+
+#[uniffi::export]
+pub fn local_deletions(local: Vec<LocalEntry>, records: Vec<SyncRecord>) -> Vec<String> {
+    crate::plan::local_deletions(&local, &records)
+}
 
 #[uniffi::export]
 pub fn plan(input: SyncInput) -> SyncPlan {
@@ -55,6 +60,11 @@ pub fn sha256_hex(bytes: Vec<u8>) -> String {
 #[uniffi::export]
 pub fn conflict_copy_name(path: String, existing_paths: Vec<String>) -> String {
     crate::paths::conflict_copy_name(&path, &existing_paths)
+}
+
+#[uniffi::export]
+pub fn fold_case(path: String) -> String {
+    crate::paths::fold_case(&path)
 }
 
 #[uniffi::export]

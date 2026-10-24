@@ -15,15 +15,20 @@ The core does no I/O. A sync pass in an app is:
 1. List the local tree and the drive (`LocalEntry`, `RemoteEntry`: path, folder flag, mtime, local SHA-256 or remote id and version) and load the
    records of the previous sync (`SyncRecord`). Include the entries that are not synced (other files, hidden files
    and folders): they keep their folder from being deleted.
-2. `plan(input)` returns ordered actions (`kind`: `createRemoteFolder`, `createLocalFolder`, `uploadNew`,
+2. Before planning, call `localDeletions(local, records)` for **every** linked drive and persist `localDeleted = true`
+   on the returned file records. A successful action writes an unflagged record. `plan(input)` returns ordered actions (`kind`: `createRemoteFolder`, `createLocalFolder`, `uploadNew`,
    `uploadRevision`, `download`, `deleteLocal`, `deleteRemote`, `reconcile`, `record`, `forget`, `error`, ...). Run each one with the app's stores; a
    failing action adds `"<path>: <message>"` to the pass's errors and the pass goes on.
 3. For `reconcile` (a note changed on both sides), download the remote text, read the base copy if the record has
    one and call `reconcile({ path, base, local, localModifiedMillis, remote, remoteEntry, existingPaths, newId })`:
    - `same`: record the path and update the base copy;
    - `merged`: write the merged text locally, upload it, record it;
-   - `newestWins`: keep `winner` on both sides, write `copyText` (the loser, with the fresh id) to `copyPath`,
-     upload it, record both and show the conflict. The merge-back UI calls `merge3(base, note, copy)` and `mergeText(chunks, choices)`.
+   - `newestWins`: persist `conflictCopyIntent` **before** creating `copyText` at `copyPath`, using
+     `copyModifiedMillis` (the losing edit time). Only after the copy is durable may the losing original be
+     overwritten. Upload the copy create-only, record both, then clear the intent. On restart pass the saved
+     intent and the exact `existingCopy` back to `reconcile`; `reuseCopy` means its bytes and time were verified.
+     An edited or unrelated copy is preserved and a fresh copy is allocated. The merge-back UI calls
+     `merge3(base, note, copy)` and `mergeText(chunks, choices)`.
 4. `buildManifest(records, deviceId, nowMillis, previousManifestText)` returns the new manifest text, or nothing when
    it hasn't changed; upload it to `.marknotes/manifest.json`.
 
@@ -63,6 +68,24 @@ import { plan, reconcile, buildManifest } from "@marknotes/sync";
 
 The WebAssembly is inlined and instantiated synchronously on import, so it works in Node, Electron and browsers
 without bundler configuration.
+
+### Installing an unreleased source commit
+
+The repository root is also an npm package. Pin a full source commit instead of inventing an unpublished release
+URL: `npm install github:MaxDac/marknotes-sync#<full-commit-sha>`. Its `prepare` script builds the same runtime as the
+release tgz, using Node (no shell-specific build script). Installation needs Git, a host C/C++ linker, Rust 1.99.1
+(selected by `rust-toolchain.toml`), the `wasm32-unknown-unknown` target, and `wasm-bindgen-cli` 0.2.129:
+
+```sh
+rustup toolchain install 1.99.1 --profile minimal
+rustup target add wasm32-unknown-unknown --toolchain 1.99.1
+cargo +1.99.1 install wasm-bindgen-cli --version 0.2.129 --locked
+```
+
+Only the build environment needs Rust; the installed package still embeds its WebAssembly and needs no Rust at
+runtime. Kotlin source consumers build their pinned checkout with `scripts/kotlin-bindings.sh` and package
+`jar`/`nativesJar` in `bindings/kotlin`; Android additionally requires real libraries from `scripts/android-libs.sh`.
+An empty AAR is not a usable Android build.
 
 Gradle (Android):
 

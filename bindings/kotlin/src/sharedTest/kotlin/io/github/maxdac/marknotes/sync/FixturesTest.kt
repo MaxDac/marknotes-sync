@@ -24,6 +24,12 @@ import kotlin.test.assertTrue
  * Android instrumented tests (bindings/android-test, the libraries from the AAR); each provides [FixtureSource].
  */
 class FixturesTest {
+    @Test
+    fun simpleFoldGuardsMatchThePlanner() {
+        assertEquals(foldCase("\u017f/\u03a3.md"), foldCase("S/\u03c2.md"))
+        assertTrue(foldCase("\u0130.md") != foldCase("i.md"))
+    }
+
     private fun suite(file: String, run: (JsonObject) -> JsonElement) {
         val body = Json.parseToJsonElement(FixtureSource.read("fixtures/$file")).jsonObject
         for (case in body.getValue("cases").jsonArray) {
@@ -45,7 +51,7 @@ class FixturesTest {
 
     private fun record(o: JsonObject) = SyncRecord(
         o.str("path"), o.bool("isFolder"), o.str("remoteId"), o.str("remoteVersion"), o.str("localHash"),
-        o.long("syncedAt"),
+        o.long("syncedAt"), (o["localDeleted"] as? JsonPrimitive)?.boolean ?: false,
     )
 
     private fun json(r: RemoteEntry) = buildJsonObject {
@@ -58,6 +64,14 @@ class FixturesTest {
 
     private fun json(a: Action): JsonObject = buildJsonObject {
         when (a) {
+            is Action.RenameLocal -> {
+                put("kind", "renameLocal"); put("path", a.path); put("toPath", a.toPath)
+                put("isFolder", a.isFolder); put("remote", json(a.remote)); put("sha256", s(a.sha256))
+            }
+            is Action.RenameRemote -> {
+                put("kind", "renameRemote"); put("path", a.path); put("toPath", a.toPath)
+                put("isFolder", a.isFolder); put("remote", json(a.remote)); put("sha256", s(a.sha256))
+            }
             is Action.Error -> {
                 put("kind", "error"); put("path", a.path); put("message", a.message)
             }
@@ -107,6 +121,24 @@ class FixturesTest {
     }
 
     @Test
+    fun localDeletions() = suite("sync/local-deletions.json") { i ->
+        val local = i.getValue("local").jsonArray.map {
+            val o = it.jsonObject
+            LocalEntry(o.str("path"), o.bool("isFolder"), o.long("modifiedMillis"), o.strOrNull("sha256"))
+        }
+        buildJsonObject {
+            put("paths", strings(localDeletions(local, i.getValue("records").jsonArray.map { record(it.jsonObject) })))
+        }
+    }
+
+    @Test
+    fun executorSafetyContract() = suite("sync/executor-safety.json") { i ->
+        val observations = Json.parseToJsonElement(FixtureSource.read("parity/executor-safety.json")).jsonArray
+        val observed = observations.map { it.jsonObject }.single { it.getValue("input") == i }
+        observed.getValue("actual")
+    }
+
+    @Test
     fun plan() = suite("sync/plan.json") { i ->
         val input = SyncInput(
             local = i.getValue("local").jsonArray.map {
@@ -126,7 +158,7 @@ class FixturesTest {
             ReconcileInput(
                 i.str("path"), i.str("local"), i.long("localModifiedMillis"), i.str("remote"),
                 remote(i.getValue("remoteEntry").jsonObject), i.strOrNull("base"), i.strings("existingPaths"),
-                i.str("newId"),
+                i.str("newId"), parseCopyIntent(i["conflictCopyIntent"]), parseExistingCopy(i["existingCopy"]),
             ),
         )
         when (outcome) {
@@ -140,6 +172,9 @@ class FixturesTest {
                 put("winner", if (outcome.winner == Side.LOCAL) "local" else "remote")
                 put("copyPath", outcome.copyPath)
                 put("copyText", outcome.copyText)
+                put("copyModifiedMillis", outcome.copyModifiedMillis)
+                put("conflictCopyIntent", copyIntentJson(outcome.conflictCopyIntent))
+                put("reuseCopy", outcome.reuseCopy)
             }
         }
     }
@@ -236,6 +271,7 @@ class FixturesTest {
     @Test
     fun everyOwnedFixtureFileIsMapped() {
         val mapped = setOf(
+            "sync/local-deletions.json", "sync/executor-safety.json",
             "sync/plan.json", "sync/reconcile.json", "sync/multi-drive.json", "manifest/parse.json",
             "manifest/serialize.json", "manifest/build.json", "merge/merge3.json", "merge/conflict-copy-name.json",
         )

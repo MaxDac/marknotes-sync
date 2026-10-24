@@ -47,6 +47,8 @@ const BOM: char = '\u{feff}';
 fn path_of(a: &Action) -> &str {
     match a {
         Action::Error { path, .. }
+        | Action::RenameLocal { path, .. }
+        | Action::RenameRemote { path, .. }
         | Action::RecordFolder { path, .. }
         | Action::CreateRemoteFolder { path }
         | Action::CreateLocalFolder { path, .. }
@@ -300,8 +302,7 @@ proptest! {
     }
 
     /// PLAN-ORDER: errors first, by path (UTF-16 order); then folder steps by depth then path (parents before
-    /// children); then file steps by path; folder deletions last, top-most only, with no file deletion inside a
-    /// folder deletion of the same side.
+    /// children); then file steps by path; empty-folder deletions last, deepest-first, after each guarded child.
     #[test]
     fn plan_order_parents_first_deletions_last(input in gen::sync_input(14)) {
         let actions = plan(&input).actions;
@@ -341,18 +342,24 @@ proptest! {
         let remote_deletes: Vec<&str> = actions.iter()
             .filter(|a| matches!(a, Action::DeleteRemoteFolder { .. })).map(path_of).collect();
         for (deletes, file_kind) in [(&local_deletes, true), (&remote_deletes, false)] {
-            for d in deletes.iter() {
-                prop_assert!(
-                    !deletes.iter().any(|o| paths::is_ancestor(o, d)),
-                    "{d} deleted under another folder deletion; {}", shown
-                );
-                for a in &actions {
+            for pair in deletes.windows(2) {
+                let order = paths::depth(pair[1]).cmp(&paths::depth(pair[0]))
+                    .then_with(|| paths::compare(pair[0], pair[1]));
+                prop_assert_eq!(order, Ordering::Less, "{}", shown);
+            }
+            for d in deletes {
+                let deletion = actions.iter().position(|a| is_folder_delete(a) && path_of(a) == *d).unwrap();
+                let folder_action = &actions[deletion];
+                prop_assert_eq!(forget_list(folder_action), &[d.to_string()], "{}", shown);
+                for (i, a) in actions.iter().enumerate() {
                     let inside = match a {
                         Action::DeleteLocal { path } if file_kind => paths::is_ancestor(d, path),
                         Action::DeleteRemote { path, .. } if !file_kind => paths::is_ancestor(d, path),
                         _ => false,
                     };
-                    prop_assert!(!inside, "{a:?} inside folder deletion {d}; {}", shown);
+                    if inside {
+                        prop_assert!(i < deletion, "{a:?} must precede empty-folder deletion {d}; {}", shown);
+                    }
                 }
             }
         }
@@ -400,6 +407,19 @@ proptest! {
                 prop_assert_eq!(remote.get(p).copied(), Some(r), "payload is not the listed entry; {}", shown);
             }
             let ok = match a {
+                Action::RenameLocal { to_path, sha256, is_folder, remote: entry, .. } => {
+                    let source = local.get(p).or_else(|| {
+                        records.get(p).filter(|r| r.remote_id == entry.id)
+                            .and_then(|_| local.get(to_path.as_str()))
+                    });
+                    paths::fold_case(p) == paths::fold_case(to_path)
+                        && remote.get(to_path.as_str()).copied() == Some(entry)
+                        && source.is_some_and(|e| e.is_folder == *is_folder
+                            && (*is_folder || e.sha256 == *sha256))
+                }
+                Action::RenameRemote { to_path, remote: entry, .. } => {
+                    remote.get(p).copied() == Some(entry) && local.contains_key(to_path.as_str())
+                }
                 Action::UploadNew { .. } | Action::UploadRevision { .. } | Action::DeleteLocal { .. } => local_file(p),
                 Action::Reconcile { .. } => local_file(p) && !remote[p].is_folder,
                 Action::Download { .. } | Action::DeleteRemote { .. } => !remote[p].is_folder,
@@ -803,6 +823,8 @@ fn reconcile_input() -> impl Strategy<Value = ReconcileInput> {
                     existing_paths: existing,
                     new_id,
                     path,
+                    conflict_copy_intent: None,
+                    existing_copy: None,
                 }
             },
         )
@@ -866,7 +888,7 @@ proptest! {
                 return Ok(());
             }
         }
-        let ReconcileOutcome::NewestWins { winner, copy_path, copy_text } = out else {
+        let ReconcileOutcome::NewestWins { winner, copy_path, copy_text, .. } = out else {
             return Err(TestCaseError::fail(format!("expected newestWins, got {out:?}")));
         };
         let expected = if input.local_modified_millis > input.remote_entry.modified_millis {

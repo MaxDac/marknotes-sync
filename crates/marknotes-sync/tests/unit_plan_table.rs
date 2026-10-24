@@ -631,11 +631,9 @@ fn folders_are_planned_by_depth_then_path_before_files() {
     );
 }
 
-/// note-format.md, "Sync" > "Sync plan", step 3: folder deletions come last, only the top-most deleted folder gets
-/// an action, its contents get none in step 2, and its `forget` list holds the folder and every record under it,
-/// in path order.
+/// Known files are individually guarded, then empty folders are deleted deepest-first, forgetting only themselves.
 #[test]
-fn folder_deletions_are_last_and_top_most_only() {
+fn folder_deletions_are_last_and_deepest_first() {
     let q = r_dir("Q", "fQ");
     let plan = plan_json(
         vec![
@@ -665,15 +663,20 @@ fn folder_deletions_are_last_and_top_most_only() {
     assert_eq!(
         plan,
         json!([
+            delete_local("A/B/C/y.md"),
+            delete_local("A/x.md"),
+            delete_remote("Q/R/q.md", r_file("Q/R/q.md", "rq", "v1")),
             upload_new("z.md"),
-            delete_local_folder("A", &["A", "A/B", "A/B/C", "A/B/C/y.md", "A/x.md"]),
-            delete_remote_folder("Q", q, &["Q", "Q/R", "Q/R/q.md"]),
+            delete_local_folder("A/B/C", &["A/B/C"]),
+            delete_local_folder("A/B", &["A/B"]),
+            delete_local_folder("A", &["A"]),
+            delete_remote_folder("Q/R", r_dir("Q/R", "fR"), &["Q/R"]),
+            delete_remote_folder("Q", q, &["Q"]),
         ])
     );
 }
 
-/// Characterisation (the spec orders folder deletions "top-most first" but not the two sides against each other):
-/// local folder deletions come before drive folder deletions, each side by depth then path.
+/// Local empty-folder deletions precede remote ones; each side is deepest-first, then path.
 #[test]
 fn local_folder_deletions_come_before_drive_ones() {
     let a = r_dir("A", "fA");
@@ -690,8 +693,8 @@ fn local_folder_deletions_come_before_drive_ones() {
     assert_eq!(
         plan,
         json!([
-            delete_local_folder("M", &["M"]),
             delete_local_folder("K/Z", &["K/Z"]),
+            delete_local_folder("M", &["M"]),
             delete_remote_folder("A", a, &["A"]),
         ])
     );

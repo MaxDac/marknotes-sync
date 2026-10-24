@@ -65,6 +65,8 @@ pub struct Drive {
     pub next_listing: Option<ListingMode>,
     /// Folded paths whose next read returns damaged bytes (transport corruption).
     pub corrupt_next_read: BTreeSet<String>,
+    pub supports_empty_delete: bool,
+    pub recursive_delete_requests: usize,
 }
 
 fn key(path: &str) -> String {
@@ -82,6 +84,8 @@ impl Drive {
             manifest_version: 0,
             next_listing: None,
             corrupt_next_read: BTreeSet::new(),
+            supports_empty_delete: true,
+            recursive_delete_requests: 0,
         }
     }
 
@@ -257,14 +261,10 @@ impl Drive {
         Ok(())
     }
 
-    /// Creates a folder; an existing folder is returned as is.
+    /// Creates a folder only if its path is absent.
     pub fn create_folder(&mut self, path: &str) -> Result<RemoteEntry, String> {
-        if let Some(e) = self.entry(path) {
-            return if e.is_folder {
-                Ok(e.remote())
-            } else {
-                Err("is a file on the drive".into())
-            };
+        if self.entry(path).is_some() {
+            return Err("already exists on the drive".into());
         }
         if !self.parent_exists(path) {
             return Err("parent folder is missing on the drive".into());
@@ -286,12 +286,61 @@ impl Drive {
     /// Deletes a folder with everything inside. Like Dropbox `delete_v2` and OneDrive, folder deletions are
     /// not conditional: the spec's drive adapter contract only makes file deletions conditional.
     pub fn delete_folder(&mut self, path: &str) -> Result<(), String> {
+        self.recursive_delete_requests += 1;
         if !self.entry(path).is_some_and(|e| e.is_folder) {
             return Err("folder not found on the drive".into());
         }
         let k = key(path);
         self.entries
             .retain(|p, _| !(p == &k || paths::is_ancestor(&k, p)));
+        Ok(())
+    }
+
+    /// Atomic nonrecursive deletion; a new descendant cannot be removed by this operation.
+    pub fn delete_empty_folder(&mut self, path: &str, id: &str) -> Result<(), String> {
+        if !self.supports_empty_delete {
+            return Err("atomic empty-folder deletion unsupported".into());
+        }
+        if !self.entry(path).is_some_and(|e| e.is_folder && e.id == id) {
+            return Err("folder changed on the drive".into());
+        }
+        let k = key(path);
+        if self.entries.keys().any(|p| paths::is_ancestor(&k, p)) {
+            return Err("folder is not empty on the drive".into());
+        }
+        self.entries.remove(&k);
+        Ok(())
+    }
+
+    pub fn rename_case(
+        &mut self,
+        path: &str,
+        to_path: &str,
+        listed: &[RemoteEntry],
+    ) -> Result<(), String> {
+        if key(path) != key(to_path) {
+            return Err("not a case-only rename".into());
+        }
+        let inside = |p: &str| p == path || paths::is_ancestor(path, p);
+        let current: Vec<_> = self
+            .entries
+            .values()
+            .filter(|e| inside(&e.path))
+            .map(DriveEntry::remote)
+            .collect();
+        let expected: Vec<_> = listed.iter().filter(|e| inside(&e.path)).cloned().collect();
+        if current != expected || current.is_empty() {
+            return Err("rename precondition failed".into());
+        }
+        for old in current {
+            let mut e = self.entries.remove(&key(&old.path)).unwrap();
+            e.path = format!("{to_path}{}", &old.path[path.len()..]);
+            if !e.is_folder {
+                self.history
+                    .insert((key(&e.path), e.version.clone()), e.bytes.clone());
+            }
+            self.entries.insert(key(&e.path), e);
+        }
         Ok(())
     }
 

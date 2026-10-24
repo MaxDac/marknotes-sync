@@ -68,6 +68,7 @@ pub mod drive;
 pub mod exec;
 pub mod oracle;
 pub mod rng;
+pub mod safety;
 pub mod world;
 
 pub use exec::{sync, sync_all};
@@ -155,9 +156,10 @@ mod tests {
             b"1",
             "history keeps old versions"
         );
-        d.create_folder("F").unwrap();
-        d.create_folder("F").unwrap();
+        let folder = d.create_folder("F").unwrap();
+        assert!(d.create_folder("F").is_err());
         d.create_file("F/x.md", b"x".to_vec(), 1, false).unwrap();
+        assert!(d.delete_empty_folder("F", &folder.id).is_err());
         d.delete_folder("f").unwrap();
         assert!(d.entry("F/x.md").is_none());
         d.delete_file("a.md", Some(&b.version)).unwrap();

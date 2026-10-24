@@ -356,6 +356,7 @@ fn record(path: &str, is_folder: bool, version: &str, hash: &str, synced_at: i64
         remote_version: version.into(),
         local_hash: hash.into(),
         synced_at,
+        local_deleted: false,
     }
 }
 

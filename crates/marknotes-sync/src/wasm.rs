@@ -8,7 +8,19 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::merge::{ConflictChoice, MergeChunk};
-use crate::model::{ReconcileInput, SyncInput, SyncRecord};
+use crate::model::{LocalEntry, ReconcileInput, SyncInput, SyncRecord};
+
+#[wasm_bindgen(js_name = localDeletions)]
+pub fn local_deletions(local: JsValue, records: JsValue) -> Result<JsValue, JsError> {
+    let local: Vec<LocalEntry> = from_js(local)?;
+    let records: Vec<SyncRecord> = from_js(records)?;
+    to_js(&crate::plan::local_deletions(&local, &records))
+}
+
+#[wasm_bindgen(js_name = foldCase)]
+pub fn fold_case(path: &str) -> String {
+    crate::paths::fold_case(path)
+}
 
 fn from_js<T: DeserializeOwned>(value: JsValue) -> Result<T, JsError> {
     serde_wasm_bindgen::from_value(value).map_err(|e| JsError::new(&e.to_string()))
