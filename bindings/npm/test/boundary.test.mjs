@@ -118,3 +118,21 @@ test("after a reset the module works and older schedulers refuse to run", () => 
   assert.equal(after.next(), "a");
   after.free();
 });
+
+test("results: a time that is not a safe integer throws instead of losing precision", () => {
+  const manifest = (syncedAt) => `{"format":1,"deviceId":"d","updatedAt":1,"files":{"a.md":{"sha256":"h","version":"v","syncedAt":${syncedAt}}}}`;
+  assert.equal(sync.parseManifest(manifest("9007199254740991")).files["a.md"].syncedAt, Number.MAX_SAFE_INTEGER);
+  for (const bad of ["9007199254740992", "-9007199254740992", "9223372036854775807"]) {
+    assert.throws(() => sync.parseManifest(manifest(bad)), /not a safe integer/, bad);
+  }
+  assert.equal(sync.sha256Hex(new Uint8Array()).length, 64, "the module still works");
+});
+
+test("results: keys such as __proto__ and constructor are own keys (D15)", () => {
+  const entry = { sha256: "h", version: "v", syncedAt: 2 };
+  const text = JSON.stringify({ format: 1, deviceId: "d", updatedAt: 1, files: { ["__proto__"]: entry, constructor: entry } });
+  const { files } = sync.parseManifest(text);
+  assert.deepEqual(Object.keys(files).sort(), ["__proto__", "constructor"]);
+  assert.equal(Object.getPrototypeOf(files), Object.prototype);
+  assert.deepEqual(sync.parseManifest(sync.serializeManifest(sync.parseManifest(text))), sync.parseManifest(text));
+});

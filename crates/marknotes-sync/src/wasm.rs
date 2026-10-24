@@ -14,10 +14,18 @@ fn from_js<T: DeserializeOwned>(value: JsValue) -> Result<T, JsError> {
     serde_wasm_bindgen::from_value(value).map_err(|e| JsError::new(&e.to_string()))
 }
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = JSON, js_name = parse, catch)]
+    fn json_parse(text: &str) -> Result<JsValue, JsValue>;
+}
+
+/// Results are built by `JSON.parse`, which defines every key as an own property. Building objects by assignment
+/// (as serde-wasm-bindgen does) would turn a manifest path named `__proto__` into the object's prototype and lose it.
 fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsError> {
-    value
-        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
-        .map_err(|e| JsError::new(&e.to_string()))
+    let json = serde_json::to_value(value).map_err(|e| JsError::new(&e.to_string()))?;
+    numbers::check_safe(&json).map_err(|e| JsError::new(&e))?;
+    json_parse(&json.to_string()).map_err(|_| JsError::new("could not build the result"))
 }
 
 /// Checks on JS numbers passed as plain arguments, which wasm-bindgen would otherwise wrap or truncate silently.
@@ -46,6 +54,28 @@ mod numbers {
         }
     }
 
+    /// Fails when a result holds an integer a JS number can't hold exactly (a manifest can carry any `i64` time).
+    pub fn check_safe(value: &serde_json::Value) -> Result<(), String> {
+        match value {
+            serde_json::Value::Number(n) => {
+                let safe = n.as_i64().map_or_else(
+                    || n.as_u64().is_none() && n.as_f64().is_some_and(f64::is_finite),
+                    |i| i.unsigned_abs() <= MAX_SAFE_INTEGER as u64,
+                );
+                if safe {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "{n} can't be represented as a JavaScript number (not a safe integer)"
+                    ))
+                }
+            }
+            serde_json::Value::Array(xs) => xs.iter().try_for_each(check_safe),
+            serde_json::Value::Object(map) => map.values().try_for_each(check_safe),
+            _ => Ok(()),
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -66,6 +96,21 @@ mod numbers {
             assert_eq!(millis("t", -MAX_SAFE_INTEGER), Ok(-9_007_199_254_740_991));
             for bad in [1.5, MAX_SAFE_INTEGER + 1.0, f64::NAN, f64::NEG_INFINITY] {
                 assert!(millis("t", bad).is_err(), "{bad}");
+            }
+        }
+
+        #[test]
+        fn results_hold_only_safe_integers() {
+            let ok = serde_json::json!({ "a": [9_007_199_254_740_991_i64, -9_007_199_254_740_991_i64, 1.5, "x", null] });
+            assert_eq!(check_safe(&ok), Ok(()));
+            for bad in [
+                serde_json::json!(9_007_199_254_740_992_i64),
+                serde_json::json!(-9_007_199_254_740_992_i64),
+                serde_json::json!(i64::MIN),
+                serde_json::json!(u64::MAX),
+                serde_json::json!({ "files": { "a.md": { "syncedAt": i64::MAX } } }),
+            ] {
+                assert!(check_safe(&bad).is_err(), "{bad}");
             }
         }
     }
