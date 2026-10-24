@@ -2,19 +2,36 @@
 // the package works unchanged in Node, Electron and browser bundlers. Needs cargo with the wasm32-unknown-unknown
 // target and the wasm-bindgen CLI at the version pinned in crates/marknotes-sync/Cargo.toml.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
 const out = join(here, "generated");
-const run = (cmd, args) => execFileSync(cmd, args, { cwd: root, stdio: "inherit" });
+const run = (cmd, args, env = process.env) => execFileSync(cmd, args, { cwd: root, stdio: "inherit", env });
+
+// Like scripts/lib/reproducible.sh: map the build-specific paths rustc embeds (panic locations) to fixed ones, so
+// the wasm is the same whatever the checkout directory or Cargo home. rustc applies the last matching prefix.
+run("cargo", ["fetch", "--locked", "--quiet"]);
+const cargoHome = process.env.CARGO_HOME ?? join(homedir(), ".cargo");
+const registry = join(cargoHome, "registry", "src");
+const remaps = [
+  [resolve(root), "/marknotes-sync"],
+  [cargoHome, "/cargo"],
+  [join(resolve(root), "vendor"), "/deps"],
+  ...(existsSync(registry) ? readdirSync(registry).map((d) => [join(registry, d), "/deps"]) : []),
+];
+const rustflags = [
+  ...(process.env.RUSTFLAGS ?? "").split(" ").filter(Boolean),
+  ...remaps.map(([from, to]) => `--remap-path-prefix=${from}=${to}`),
+].join("\x1f");
 
 run("cargo", [
   "build", "--release", "--locked", "-p", "marknotes-sync",
   "--features", "wasm", "--target", "wasm32-unknown-unknown",
-]);
+], { ...process.env, CARGO_ENCODED_RUSTFLAGS: rustflags });
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 run("wasm-bindgen", [

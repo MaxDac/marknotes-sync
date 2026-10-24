@@ -22,7 +22,9 @@
   "sideEffects": true,
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test test/fixtures.test.mjs test/boundary.test.mjs"
+    "test": "node --test test/fixtures.test.mjs test/boundary.test.mjs test/parity.test.mjs",
+    "typecheck": "tsc -p test/types",
+    "smoke": "node test/smoke.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -32,5 +34,8 @@
     "url": "git+https://github.com/MaxDac/marknotes-sync.git",
     "directory": "bindings/npm"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
 }
