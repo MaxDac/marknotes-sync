@@ -1,5 +1,8 @@
 // Types of the MarkNotes sync core. Field names match the marknotes-spec fixtures. Times are milliseconds since the
-// epoch; hashes are lowercase hex SHA-256.
+// epoch and must be safe integers; hashes are lowercase hex SHA-256. Functions taking objects throw an Error when a
+// field is missing or has the wrong type. If the WebAssembly code ever traps, the call throws a
+// WebAssembly.RuntimeError and the instance is replaced (see recover.js); SyncScheduler objects created before then
+// throw when used.
 
 /** A file or folder in the local note tree. `sha256` is required for files. */
 export interface LocalEntry {
@@ -121,7 +124,10 @@ export function mergeText(chunks: MergeChunk[], choices?: Record<number, Conflic
 /** Parses a manifest; null when it is unreadable or uses a newer format. */
 export function parseManifest(text: string): Manifest | null;
 export function serializeManifest(manifest: Manifest): string;
-/** The manifest to write after a sync, or null when the files are unchanged from `previous`. */
+/**
+ * The manifest to write after a sync, or null when the files are unchanged from `previous`. Throws when
+ * `nowMillis` is not a safe integer.
+ */
 export function buildManifest(
   records: SyncRecord[],
   deviceId: string,
@@ -138,10 +144,11 @@ export function withId(text: string, id: string): string;
 
 /**
  * Order in which several drives are synced: call `next()` until it returns undefined, and `report()` each result.
- * A drive that brings local changes queues the others again, at most `maxPasses` times each.
+ * A drive that brings local changes queues the others again, at most `maxPasses` times each (default 3).
+ * The constructor and `report()` throw when `maxPasses` or `localChanges` is not a non-negative integer.
  */
 export class SyncScheduler {
-  constructor(driveIds: string[], maxPasses?: number);
+  constructor(driveIds: string[], maxPasses?: number | null);
   next(): string | undefined;
   report(driveId: string, localChanges: number, failed: boolean): void;
   free(): void;

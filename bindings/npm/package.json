@@ -1,6 +1,6 @@
 {
   "name": "@marknotes/sync",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "license": "GPL-3.0-or-later",
   "description": "Shared sync core of the MarkNotes apps (WebAssembly)",
   "type": "module",
@@ -14,6 +14,7 @@
   },
   "files": [
     "index.js",
+    "recover.js",
     "index.d.ts",
     "generated/marknotes_sync.js",
     "generated/wasm-base64.js"
@@ -21,7 +22,7 @@
   "sideEffects": true,
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test test/fixtures.test.mjs"
+    "test": "node --test test/fixtures.test.mjs test/boundary.test.mjs"
   },
   "engines": {
     "node": ">=18"

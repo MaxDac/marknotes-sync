@@ -69,12 +69,12 @@ repositories {
 
 // :core (pure JVM)
 implementation("io.github.maxdac.marknotes:marknotes-sync-kotlin:0.1.0")
-implementation("net.java.dev.jna:jna:5.17.0")
+implementation("net.java.dev.jna:jna:5.19.1")
 testRuntimeOnly("io.github.maxdac.marknotes:marknotes-sync-natives:0.1.0")
 
 // :app
 implementation("io.github.maxdac.marknotes:marknotes-sync-android:0.1.0@aar")
-implementation("net.java.dev.jna:jna:5.17.0@aar")
+implementation("net.java.dev.jna:jna:5.19.1@aar")
 ```
 
 ## Building

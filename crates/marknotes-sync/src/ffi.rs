@@ -82,6 +82,28 @@ pub fn with_id(text: String, id: String) -> String {
     crate::front_matter::with_id(&text, &id)
 }
 
+/// An argument the core cannot accept (thrown in Kotlin as `SyncException.InvalidArgument`).
+#[derive(Debug, PartialEq, Eq, uniffi::Error)]
+#[uniffi(flat_error)]
+pub enum SyncError {
+    InvalidArgument(String),
+}
+
+impl std::fmt::Display for SyncError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncError::InvalidArgument(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for SyncError {}
+
+fn non_negative(name: &str, value: i32) -> Result<u32, SyncError> {
+    u32::try_from(value)
+        .map_err(|_| SyncError::InvalidArgument(format!("{name} must not be negative: {value}")))
+}
+
 /// Order in which the drives are synced; see the Rust `Scheduler`.
 #[derive(uniffi::Object)]
 pub struct SyncScheduler {
@@ -90,23 +112,52 @@ pub struct SyncScheduler {
 
 #[uniffi::export]
 impl SyncScheduler {
+    /// Throws `SyncException.InvalidArgument` when `max_passes` is negative.
     #[uniffi::constructor]
-    pub fn new(drive_ids: Vec<String>, max_passes: i32) -> Arc<Self> {
-        let max = u32::try_from(max_passes).unwrap_or(0);
-        Arc::new(SyncScheduler {
+    pub fn new(drive_ids: Vec<String>, max_passes: i32) -> Result<Arc<Self>, SyncError> {
+        let max = non_negative("maxPasses", max_passes)?;
+        Ok(Arc::new(SyncScheduler {
             inner: Mutex::new(crate::scheduler::Scheduler::new(drive_ids, max)),
-        })
+        }))
     }
 
     pub fn next(&self) -> Option<String> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).next()
     }
 
-    pub fn report(&self, drive_id: String, local_changes: i32, failed: bool) {
-        let changes = u32::try_from(local_changes).unwrap_or(0);
+    /// Throws `SyncException.InvalidArgument` when `local_changes` is negative; nothing is recorded then.
+    pub fn report(
+        &self,
+        drive_id: String,
+        local_changes: i32,
+        failed: bool,
+    ) -> Result<(), SyncError> {
+        let changes = non_negative("localChanges", local_changes)?;
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .report(&drive_id, changes, failed);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheduler_rejects_negative_counts() {
+        assert_eq!(
+            SyncScheduler::new(vec!["a".into()], -1).err(),
+            Some(SyncError::InvalidArgument(
+                "maxPasses must not be negative: -1".into()
+            ))
+        );
+        let s = SyncScheduler::new(vec!["a".into(), "b".into()], 3).unwrap();
+        assert_eq!(s.next().as_deref(), Some("a"));
+        assert!(s.report("a".into(), -1, false).is_err());
+        assert_eq!(s.next().as_deref(), Some("b"));
+        assert!(s.report("b".into(), 0, false).is_ok());
+        assert_eq!(s.next(), None);
     }
 }

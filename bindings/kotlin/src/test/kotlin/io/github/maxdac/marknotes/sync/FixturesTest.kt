@@ -215,6 +215,39 @@ class FixturesTest {
     }
 
     @Test
+    fun readId() = suite("front-matter/read-id.json") { i ->
+        buildJsonObject { put("id", s(readId(i.str("text")))) }
+    }
+
+    @Test
+    fun manifestSerialize() = suite("manifest/serialize.json") { i ->
+        val files = i.getValue("files").jsonObject.mapValues { (_, e) ->
+            val o = e.jsonObject
+            ManifestEntry(o.str("sha256"), o.str("version"), o.long("syncedAt"))
+        }
+        buildJsonObject { put("json", serializeManifest(Manifest(i.str("deviceId"), i.long("updatedAt"), files))) }
+    }
+
+    @Test
+    fun isAttachmentPath() = suite("attachments/is-attachment-path.json") { i ->
+        buildJsonObject { put("isAttachment", isAttachmentPath(i.str("path"))) }
+    }
+
+    /** Like the Rust runner: every fixture file of the folders the core owns must have a suite here. */
+    @Test
+    fun everyOwnedFixtureFileIsMapped() {
+        val mapped = setOf(
+            "sync/plan.json", "sync/reconcile.json", "sync/multi-drive.json", "manifest/parse.json",
+            "manifest/serialize.json", "manifest/build.json", "merge/merge3.json", "merge/conflict-copy-name.json",
+        )
+        for (folder in listOf("sync", "manifest", "merge")) {
+            for (f in File(specDir, "fixtures/$folder").listFiles { f -> f.name.endsWith(".json") }!!) {
+                assert("$folder/${f.name}" in mapped) { "$folder/${f.name} has no suite" }
+            }
+        }
+    }
+
+    @Test
     fun sha256() {
         assertEquals(
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",

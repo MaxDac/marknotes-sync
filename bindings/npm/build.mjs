@@ -18,7 +18,7 @@ run("cargo", [
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 run("wasm-bindgen", [
-  "--target", "web", "--no-typescript", "--out-dir", out, "--out-name", "marknotes_sync",
+  "--target", "web", "--no-typescript", "--experimental-reset-state-function", "--out-dir", out, "--out-name", "marknotes_sync",
   join(root, "target", "wasm32-unknown-unknown", "release", "marknotes_sync.wasm"),
 ]);
 
@@ -28,6 +28,7 @@ const gluePath = join(out, "marknotes_sync.js");
 const glue = readFileSync(gluePath, "utf8");
 const urlPattern = /new URL\('marknotes_sync_bg\.wasm', import\.meta\.url\)/g;
 if (!urlPattern.test(glue)) throw new Error("wasm-bindgen output changed: no default .wasm URL found");
+if (!/export function __wbg_reset_state\b/.test(glue) || !glue.includes("wasm.__wbindgen_start()")) throw new Error("wasm-bindgen output changed: no __wbg_reset_state");
 writeFileSync(gluePath, glue.replace(urlPattern, "undefined"));
 
 const wasm = readFileSync(join(out, "marknotes_sync_bg.wasm"));
