@@ -10,7 +10,7 @@ mod sim;
 
 use std::collections::BTreeSet;
 
-use marknotes_sync::{front_matter, hashing::sha256_hex, paths, plan::CASE_MESSAGE, Action};
+use marknotes_sync::{front_matter, hashing::sha256_hex, paths, Action};
 use sim::device::Node;
 use sim::drive::ListingMode;
 use sim::exec::{kind, SessionOutcome};
@@ -246,8 +246,7 @@ fn sim_fail() {
         }
     }
 
-    // Records are dropped only after a successful deletion: a failed folder deletion keeps them, so the next sync
-    // deletes again instead of recreating the folder.
+    // A failed empty-folder deletion retains its own record; successfully deleted children are forgotten.
     for (label, folder, inner, again) in [
         ("drive delete folder", "F", "F/x.md", "deleteRemoteFolder"),
         ("delete local folder", "G", "G/y.md", "deleteLocalFolder"),
@@ -260,8 +259,8 @@ fn sim_fail() {
             "{folder} record kept"
         );
         assert!(
-            w.devices[1].record("drive0", inner).is_some(),
-            "{inner} record kept"
+            w.devices[1].record("drive0", inner).is_none(),
+            "{inner} successful deletion recorded"
         );
         let next: Vec<&str> = w.plan_for(1, 0).actions.iter().map(kind).collect();
         assert!(next.contains(&again), "{label}: next plan {next:?}");
@@ -317,15 +316,28 @@ fn sim_midsync() {
         quiesce(&mut w);
         w.delete(0, "F");
         sync(&mut w, 0);
-        w.hook(before_action(1, "deleteLocalFolder"), move |w| {
-            if nested_edit {
-                w.edit(1, "F/S/b.md", Edit::Append);
-            } else {
-                w.create(1, "F/S/new.md");
-            }
-        });
+        w.hook(
+            before_action(
+                1,
+                if nested_edit {
+                    "deleteLocal"
+                } else {
+                    "deleteLocalFolder"
+                },
+            ),
+            move |w| {
+                if nested_edit {
+                    w.edit(1, "F/S/b.md", Edit::Append);
+                } else {
+                    w.create(1, "F/S/new.md");
+                }
+            },
+        );
         let out = sync(&mut w, 1);
-        assert_eq!(out[0].skipped, ["F"]);
+        assert!(out[0].errors.iter().any(|e| e.contains("not empty")));
+        if nested_edit {
+            assert_eq!(out[0].skipped, ["F/S/b.md"]);
+        }
         finish(&mut w);
         let kept = if nested_edit {
             "F/S/b.md"
@@ -728,39 +740,29 @@ fn story_folder_delete_vs_inner_change() {
     }
 }
 
-/// A rename that only changes case is reported as the spec's case error on both paths and nothing is synced
-/// for them; renaming through another name works.
+/// A recorded unchanged stale drive spelling converges without rewriting either note's bytes.
 #[test]
 fn story_case_only_rename() {
     let mut w = World::pair();
     let original = shared_note(&mut w, 0, "Note.md");
     w.rename(0, "Note.md", "note.md");
     let out = sync(&mut w, 0);
-    let errs = errors(&out);
-    for p in ["Note.md", "note.md"] {
-        assert!(errs.contains(&format!("{p}: {CASE_MESSAGE}")), "{errs:?}");
-    }
+    assert!(errors(&out).is_empty(), "{out:?}");
     assert!(
-        kinds(&out).iter().all(|k| *k == "error"),
-        "nothing else is planned"
+        kinds(&out).contains(&"renameRemote"),
+        "{out:?}\n{}",
+        w.describe()
     );
     assert_eq!(drive_text(&w, 0, "Note.md").unwrap(), original);
-    assert_eq!(w.drives[0].entry("Note.md").unwrap().path, "Note.md");
+    assert_eq!(w.drives[0].entry("Note.md").unwrap().path, "note.md");
     w.assert_no_violations();
 
-    w.rename(0, "note.md", "renaming.md");
-    sync(&mut w, 0);
-    sync(&mut w, 1);
-    w.rename(0, "renaming.md", "note.md");
-    sync(&mut w, 0);
     finish(&mut w);
     assert!(w.devices[1].file("note.md").is_some() && w.devices[1].file("Note.md").is_none());
     assert_eq!(w.drives[0].entry("note.md").unwrap().path, "note.md");
 }
 
-/// GAP: the spec's two-step case-only rename only works for a device that syncs between the two steps. A device
-/// that sees only the end state (its `Note.md` against the drive's `note.md`) reports the case error on both paths
-/// for ever: nothing is lost, but it never converges until its user renames the note too.
+/// A device that missed the intermediate spelling converges using its unchanged stale local record.
 #[test]
 fn gap_case_rename_missed_by_another_device() {
     let mut w = World::pair();
@@ -769,21 +771,16 @@ fn gap_case_rename_missed_by_another_device() {
     sync(&mut w, 0);
     w.rename(0, "renaming.md", "note.md");
     sync(&mut w, 0);
-    for _ in 0..2 {
-        let out = sync(&mut w, 1);
-        let errs = errors(&out);
-        for p in ["Note.md", "note.md"] {
-            assert!(errs.contains(&format!("{p}: {CASE_MESSAGE}")), "{errs:?}");
-        }
-        assert!(kinds(&out).iter().all(|k| *k == "error"));
-    }
-    assert_eq!(text(&w, 1, "Note.md"), original);
+    let out = sync(&mut w, 1);
+    assert!(errors(&out).is_empty(), "{out:?}");
+    assert!(
+        kinds(&out).contains(&"renameLocal"),
+        "{out:?}\n{}",
+        w.describe()
+    );
+    assert_eq!(text(&w, 1, "note.md"), original);
     assert_eq!(drive_text(&w, 0, "note.md").unwrap(), original);
     w.assert_no_violations();
-    // The user renames it on dev1 too, through another name.
-    w.rename(1, "Note.md", "renaming.md");
-    sync(&mut w, 1);
-    w.rename(1, "renaming.md", "note.md");
     finish(&mut w);
     assert!(w.devices[1].file("note.md").is_some());
 }
@@ -982,10 +979,7 @@ fn story_three_devices_two_drives() {
 
 // ----- characterisation -----
 
-/// GAP: drive folder deletions are not conditional (the spec's adapter contract only makes file deletions
-/// conditional, and Dropbox and OneDrive delete folders recursively). A file another device uploads into the
-/// folder between the listing and the folder deletion is deleted from the drive unseen, and that device then
-/// deletes its own copy as "deleted on the drive": the note is lost. This test documents the loss.
+/// A concurrent child prevents atomic empty-folder deletion and survives on every device.
 #[test]
 fn gap_folder_delete_races_concurrent_upload() {
     let mut w = World::pair();
@@ -995,21 +989,15 @@ fn gap_folder_delete_races_concurrent_upload() {
         w.create(1, "F/new.md");
         sync(w, 1);
     });
-    sync(&mut w, 0);
+    let outcomes = sync(&mut w, 0);
+    assert!(outcomes
+        .iter()
+        .any(|o| o.errors.iter().any(|e| e.contains("not empty"))));
+    assert!(w.devices[0].record(&w.drives[0].name, "F").is_some());
     quiesce(&mut w);
-    assert!(
-        w.violations()
-            .iter()
-            .any(|v| v.contains("F/new.md: deleted although it was never agreed")),
-        "{:?}",
-        w.violations()
-    );
-    assert!(
-        w.violations().iter().any(|v| v.contains("LOST")),
-        "{:?}",
-        w.violations()
-    );
-    assert!(w.devices[1].file("F/new.md").is_none());
+    assert!(w.violations().is_empty(), "{:?}", w.violations());
+    assert!(w.devices[1].file("F/new.md").is_some());
+    assert!(w.drives[0].entry("F/new.md").is_some());
 }
 
 /// AMBIGUITY: the spec does not say which modification time the conflicted copy gets. The reference executor
@@ -1029,9 +1017,7 @@ fn gap_conflicted_copy_mtime() {
     finish(&mut w);
 }
 
-/// OBSERVATION: a crash after the conflicted copy is written but before the note is overwritten leaves the conflict
-/// in place; the next sync reconciles again and writes a second copy (`… (conflicted copy) 2.md`) with the same
-/// content. Nothing is lost, but the user sees a duplicate.
+/// The durable intent reserves the copy before any write, so a crash replays the same id and path.
 #[test]
 fn gap_crash_after_copy_duplicates_it() {
     let mut w = World::pair();
@@ -1043,9 +1029,7 @@ fn gap_crash_after_copy_duplicates_it() {
     sync(&mut w, 0);
     finish(&mut w);
     let c = copies(&w, 0);
-    assert_eq!(c.len(), 2, "{c:?}");
-    let body = |p: &str| body_lines(&text(&w, 0, p)).join("\n");
-    assert_eq!(body(&c[0]), body(&c[1]), "the same content twice");
+    assert_eq!(c.len(), 1, "{c:?}");
 }
 
 // ----- randomized -----
@@ -1069,15 +1053,12 @@ fn gap_restored_note_deleted_through_stale_record() {
     sync(&mut w, 1);
     assert!(w.drives[1].entry("F/d.md").is_none());
     let outs = sync(&mut w, 0);
-    assert!(kinds(&outs).contains(&"deleteLocal"), "{outs:?}");
-    assert!(
-        w.violations().iter().any(|v| v.contains("LOST")),
-        "{:?}",
-        w.violations()
-    );
+    assert!(!kinds(&outs).contains(&"deleteLocal"), "{outs:?}");
+    finish(&mut w);
+    assert!(w.violations().is_empty(), "{:?}", w.violations());
     let anywhere = (0..2).any(|d| w.devices[d].text("F/d.md").as_deref() == Some(&x))
         || (0..2).any(|r| drive_text(&w, r, "F/d.md").as_deref() == Some(&x));
-    assert!(!anywhere, "the note is gone everywhere");
+    assert!(anywhere, "the restored note survives");
 }
 
 // ----- randomized -----

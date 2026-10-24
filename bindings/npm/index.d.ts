@@ -29,6 +29,7 @@ export interface SyncRecord {
   remoteVersion: string;
   localHash: string;
   syncedAt: number;
+  localDeleted?: boolean;
 }
 
 export interface SyncInput {
@@ -44,6 +45,8 @@ export interface SyncInput {
  * Notes keep a base copy when uploaded, downloaded or recorded with `updateBase`; attachments never do.
  */
 export type Action =
+  | { kind: "renameLocal"; path: string; toPath: string; isFolder: boolean; remote: RemoteEntry; sha256: string | null }
+  | { kind: "renameRemote"; path: string; toPath: string; isFolder: boolean; remote: RemoteEntry; sha256: string | null }
   | { kind: "error"; path: string; message: string }
   | { kind: "recordFolder"; path: string; remoteId: string }
   | { kind: "createRemoteFolder"; path: string }
@@ -77,12 +80,35 @@ export interface ReconcileInput {
   existingPaths: string[];
   /** A fresh note id for the conflicted copy. */
   newId: string;
+  conflictCopyIntent?: ConflictCopyIntent | null;
+  existingCopy?: ExistingCopy | null;
+}
+
+/** Persist before creating the copy; scoped to the current drive. */
+export interface ConflictCopyIntent {
+  path: string;
+  localHash: string;
+  remoteHash: string;
+  remoteId: string;
+  remoteVersion: string;
+  localModifiedMillis: number;
+  remoteModifiedMillis: number;
+  baseHash: string | null;
+  newId: string;
+  copyPath: string;
+  copyModifiedMillis: number;
+}
+
+export interface ExistingCopy {
+  path: string;
+  text: string;
+  modifiedMillis: number;
 }
 
 export type ReconcileOutcome =
   | { kind: "same" }
   | { kind: "merged"; text: string }
-  | { kind: "newestWins"; winner: Side; copyPath: string; copyText: string };
+  | { kind: "newestWins"; winner: Side; copyPath: string; copyText: string; copyModifiedMillis: number; conflictCopyIntent: ConflictCopyIntent; reuseCopy: boolean };
 
 export type MergeChunk =
   | { kind: "resolved"; lines: string[]; changed: boolean }
@@ -115,6 +141,8 @@ export const DEFAULT_MAX_PASSES: 3;
 
 /** The ordered actions that bring one drive and the local tree in sync. */
 export function plan(input: SyncInput): SyncPlan;
+/** File records to flag durably on every linked drive before planning. */
+export function localDeletions(local: LocalEntry[], records: SyncRecord[]): string[];
 /** Resolves a note that changed on both sides: same, merged, or newest wins with a conflicted copy. */
 export function reconcile(input: ReconcileInput): ReconcileOutcome;
 /** Line-based three-way merge; `base` is null when there is no common ancestor. */

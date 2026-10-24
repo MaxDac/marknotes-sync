@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use marknotes_sync::*;
 use serde_json::{json, Value};
 
+mod sim;
+
 fn spec_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("MARKNOTES_SPEC_DIR") {
         return PathBuf::from(dir);
@@ -60,10 +62,12 @@ fn from<T: serde::de::DeserializeOwned>(v: &Value) -> T {
 const OWNED_FOLDERS: [&str; 3] = ["sync", "manifest", "merge"];
 
 /// The fixture files that have a runner in this file.
-const MAPPED: [&str; 8] = [
+const MAPPED: [&str; 10] = [
     "sync/plan.json",
     "sync/reconcile.json",
     "sync/multi-drive.json",
+    "sync/local-deletions.json",
+    "sync/executor-safety.json",
     "manifest/parse.json",
     "manifest/serialize.json",
     "manifest/build.json",
@@ -107,6 +111,30 @@ fn sync_plan() {
     });
 }
 
+#[test]
+fn sync_local_deletions() {
+    run(
+        "sync/local-deletions.json",
+        |i| json!({ "paths": local_deletions(&from::<Vec<LocalEntry>>(&i["local"]), &from::<Vec<SyncRecord>>(&i["records"])) }),
+    );
+}
+
+#[test]
+fn sync_executor_safety() {
+    let mut observed = Vec::new();
+    for case in cases("sync/executor-safety.json") {
+        let actual = sim::safety::run(&case["input"]);
+        assert_eq!(actual, case["expected"], "{}", case["name"]);
+        observed.push(json!({ "input": case["input"], "actual": actual }));
+    }
+    let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(
+        target.join("executor-safety-results.json"),
+        serde_json::to_vec(&observed).unwrap(),
+    )
+    .unwrap();
+}
 #[test]
 fn sync_reconcile() {
     run("sync/reconcile.json", |i| {

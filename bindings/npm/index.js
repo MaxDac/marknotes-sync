@@ -22,6 +22,7 @@ function currentInstance() {
 }
 
 export const plan = guard(glue.plan, reset);
+export const localDeletions = guard(glue.localDeletions, reset);
 export const reconcile = guard(glue.reconcile, reset);
 export const merge3 = guard(glue.merge3, reset);
 export const mergeText = guard(glue.mergeText, reset);

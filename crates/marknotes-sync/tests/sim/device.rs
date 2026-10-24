@@ -3,7 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use marknotes_sync::{hashing::sha256_hex, paths, Action, LocalEntry, SyncRecord};
+use marknotes_sync::{
+    hashing::sha256_hex, paths, Action, ConflictCopyIntent, LocalEntry, SyncRecord,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Node {
@@ -17,6 +19,7 @@ pub struct PendingConflict {
     pub note_path: String,
     pub copy_path: String,
     pub base: Option<String>,
+    pub intent: ConflictCopyIntent,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -28,6 +31,7 @@ pub struct Durable {
     /// Drive name → path → base copy (notes only).
     pub bases: BTreeMap<String, BTreeMap<String, String>>,
     pub pending_conflicts: Vec<PendingConflict>,
+    pub copy_intents: BTreeMap<(String, String), ConflictCopyIntent>,
 }
 
 /// The sync in flight: the plan and the listing it was computed from. Lost on a crash.

@@ -16,6 +16,23 @@ pub fn plan(input: &SyncInput) -> SyncPlan {
     Planner::new(input).run()
 }
 
+/// File records to flag durably on every linked drive before planning from a complete local listing.
+pub fn local_deletions(local: &[LocalEntry], records: &[SyncRecord]) -> Vec<String> {
+    let files: HashSet<&str> = local
+        .iter()
+        .filter(|e| !e.is_folder)
+        .map(|e| e.path.as_str())
+        .collect();
+    let mut paths: Vec<_> = records
+        .iter()
+        .filter(|r| !r.is_folder && !r.local_deleted && !files.contains(r.path.as_str()))
+        .map(|r| r.path.clone())
+        .collect();
+    paths.sort_by(|a, b| paths::compare(a, b));
+    paths.dedup();
+    paths
+}
+
 struct Planner<'a> {
     local_all: Vec<&'a LocalEntry>,
     remote_all: Vec<&'a RemoteEntry>,
@@ -37,18 +54,13 @@ struct Planner<'a> {
     pending_local_folder_deletes: Vec<&'a str>,
     pending_remote_folder_deletes: Vec<(&'a str, &'a RemoteEntry)>,
     actions: Vec<Action>,
+    renames: Vec<Action>,
 }
 
 fn sorted(set: HashSet<&str>, cmp: fn(&str, &str) -> std::cmp::Ordering) -> Vec<&str> {
     let mut v: Vec<&str> = set.into_iter().collect();
     v.sort_by(|a, b| cmp(a, b));
     v
-}
-
-fn has_pending_ancestor(path: &str, pending: &[&str]) -> bool {
-    pending
-        .iter()
-        .any(|p| *p != path && paths::is_ancestor(p, path))
 }
 
 fn is_synced(path: &str, is_folder: bool) -> bool {
@@ -153,6 +165,7 @@ impl<'a> Planner<'a> {
             pending_local_folder_deletes: Vec::new(),
             pending_remote_folder_deletes: Vec::new(),
             actions: Vec::new(),
+            renames: case_renames(input),
         };
         planner
             .record_order
@@ -213,16 +226,43 @@ impl<'a> Planner<'a> {
     }
 
     fn run(mut self) -> SyncPlan {
+        for action in &self.renames {
+            let (path, to_path) = match action {
+                Action::RenameLocal { path, to_path, .. }
+                | Action::RenameRemote { path, to_path, .. } => (path, to_path),
+                _ => unreachable!(),
+            };
+            for p in self
+                .local_all
+                .iter()
+                .map(|e| e.path.as_str())
+                .chain(self.remote_all.iter().map(|e| e.path.as_str()))
+                .chain(self.record_order.iter().map(|r| r.path.as_str()))
+            {
+                if p == path
+                    || p == to_path
+                    || paths::is_ancestor(path, p)
+                    || paths::is_ancestor(to_path, p)
+                {
+                    self.skipped.insert(p);
+                }
+            }
+        }
         let errors = self.errors();
         let mut error_paths: Vec<&str> = errors.keys().copied().collect();
         error_paths.sort_by(|a, b| paths::compare(a, b));
         for p in error_paths {
+            if self.skipped.contains(p) {
+                continue;
+            }
             self.skipped.insert(p);
             self.actions.push(Action::Error {
                 path: p.to_string(),
                 message: errors[p].to_string(),
             });
         }
+
+        self.actions.append(&mut self.renames);
 
         // Phase 1: folders, parents first.
         let mut folder_paths: HashSet<&str> = self.local_folders.clone();
@@ -254,7 +294,7 @@ impl<'a> Planner<'a> {
             }
         }
 
-        // Phase 3: folder deletions, top-most folders only.
+        // Phase 3: local tree deletions and empty remote folders, deepest first.
         self.apply_folder_deletes();
         SyncPlan {
             actions: self.actions,
@@ -359,6 +399,13 @@ impl<'a> Planner<'a> {
             self.compare_or_merge(path, remote, false);
             return;
         };
+        if record.local_deleted
+            && !remote_changed(remote, record)
+            && self.local_hash(path) == Some(record.local_hash.as_str())
+        {
+            self.record(path, remote, &record.local_hash, false);
+            return;
+        }
         let local_changed = self.local_changed(path, record);
         let mut remote_changed = remote_changed(remote, record);
         if remote_changed && self.manifest_hash(remote) == Some(record.local_hash.as_str()) {
@@ -390,7 +437,9 @@ impl<'a> Planner<'a> {
         record: Option<&SyncRecord>,
     ) {
         let local_hash = self.local_hash(path).unwrap_or_default();
-        if record.is_none_or(|r| remote_changed(remote, r) || local_hash != r.local_hash) {
+        if record.is_none_or(|r| {
+            r.local_deleted || remote_changed(remote, r) || local_hash != r.local_hash
+        }) {
             self.record(path, remote, local_hash, false);
         }
     }
@@ -398,11 +447,8 @@ impl<'a> Planner<'a> {
     fn local_only(&mut self, path: &str, record: Option<&SyncRecord>) {
         let p = path.to_string();
         match record {
-            Some(r) if !self.local_changed(path, r) => {
-                // Inside a folder deletion: step 3 deletes it and drops its record.
-                if !has_pending_ancestor(path, &self.pending_local_folder_deletes) {
-                    self.actions.push(Action::DeleteLocal { path: p });
-                }
+            Some(r) if !r.local_deleted && !self.local_changed(path, r) => {
+                self.actions.push(Action::DeleteLocal { path: p });
             }
             _ => self.actions.push(Action::UploadNew { path: p }),
         }
@@ -412,17 +458,10 @@ impl<'a> Planner<'a> {
         let p = path.to_string();
         match record {
             Some(r) if !remote_changed(remote, r) => {
-                let pending: Vec<&str> = self
-                    .pending_remote_folder_deletes
-                    .iter()
-                    .map(|(p, _)| *p)
-                    .collect();
-                if !has_pending_ancestor(path, &pending) {
-                    self.actions.push(Action::DeleteRemote {
-                        path: p,
-                        remote: remote.clone(),
-                    });
-                }
+                self.actions.push(Action::DeleteRemote {
+                    path: p,
+                    remote: remote.clone(),
+                });
             }
             _ => self.actions.push(Action::Download {
                 path: p,
@@ -447,37 +486,31 @@ impl<'a> Planner<'a> {
         }
     }
 
-    fn forget_tree(&self, folder: &str) -> Vec<String> {
-        self.record_order
-            .iter()
-            .filter(|r| r.path == folder || paths::is_ancestor(folder, &r.path))
-            .filter(|r| !self.skipped.contains(r.path.as_str()))
-            .map(|r| r.path.clone())
-            .collect()
-    }
-
     fn apply_folder_deletes(&mut self) {
-        let local = self.pending_local_folder_deletes.clone();
+        let mut local = self.pending_local_folder_deletes.clone();
+        local.sort_by(|a, b| {
+            paths::depth(b)
+                .cmp(&paths::depth(a))
+                .then_with(|| paths::compare(a, b))
+        });
         for path in &local {
-            if !has_pending_ancestor(path, &local) {
-                let forget = self.forget_tree(path);
-                self.actions.push(Action::DeleteLocalFolder {
-                    path: path.to_string(),
-                    forget,
-                });
-            }
+            self.actions.push(Action::DeleteLocalFolder {
+                path: path.to_string(),
+                forget: vec![path.to_string()],
+            });
         }
-        let remote = self.pending_remote_folder_deletes.clone();
-        let remote_paths: Vec<&str> = remote.iter().map(|(p, _)| *p).collect();
+        let mut remote = self.pending_remote_folder_deletes.clone();
+        remote.sort_by(|(a, _), (b, _)| {
+            paths::depth(b)
+                .cmp(&paths::depth(a))
+                .then_with(|| paths::compare(a, b))
+        });
         for (path, entry) in &remote {
-            if !has_pending_ancestor(path, &remote_paths) {
-                let forget = self.forget_tree(path);
-                self.actions.push(Action::DeleteRemoteFolder {
-                    path: path.to_string(),
-                    remote: (*entry).clone(),
-                    forget,
-                });
-            }
+            self.actions.push(Action::DeleteRemoteFolder {
+                path: path.to_string(),
+                remote: (*entry).clone(),
+                forget: vec![path.to_string()],
+            });
         }
     }
 
@@ -508,7 +541,9 @@ impl<'a> Planner<'a> {
             if e.is_folder {
                 record.is_none()
             } else {
-                record.is_none_or(|r| e.sha256.as_deref() != Some(r.local_hash.as_str()))
+                record.is_none_or(|r| {
+                    r.local_deleted || e.sha256.as_deref() != Some(r.local_hash.as_str())
+                })
             }
         })
     }
@@ -530,6 +565,130 @@ impl<'a> Planner<'a> {
             }
         })
     }
+}
+
+/// Infer only a unique, record-proven stale spelling. Folder renames require a complete, unchanged stale tree.
+fn case_renames(input: &SyncInput) -> Vec<Action> {
+    let mut groups: HashMap<String, (Vec<&LocalEntry>, Vec<&RemoteEntry>, Vec<&SyncRecord>)> =
+        HashMap::new();
+    for e in &input.local {
+        groups
+            .entry(paths::fold_case(&e.path))
+            .or_default()
+            .0
+            .push(e);
+    }
+    for e in &input.remote {
+        groups
+            .entry(paths::fold_case(&e.path))
+            .or_default()
+            .1
+            .push(e);
+    }
+    for e in &input.records {
+        groups
+            .entry(paths::fold_case(&e.path))
+            .or_default()
+            .2
+            .push(e);
+    }
+    let mut candidates: Vec<_> = groups.values().collect();
+    candidates.sort_by(|a, b| {
+        let a = a.0.first().map_or("", |e| e.path.as_str());
+        let b = b.0.first().map_or("", |e| e.path.as_str());
+        paths::compare_by_depth_then_path(a, b)
+    });
+    let mut covered: Vec<String> = Vec::new();
+    let mut actions = Vec::new();
+    for (local, remote, records) in candidates {
+        let ([l], [r], [record]) = (local.as_slice(), remote.as_slice(), records.as_slice()) else {
+            continue;
+        };
+        if l.path == r.path
+            || l.is_folder != r.is_folder
+            || l.is_folder != record.is_folder
+            || !is_synced(&l.path, l.is_folder)
+            || !is_synced(&r.path, r.is_folder)
+            || covered
+                .iter()
+                .any(|p| paths::is_ancestor(p, &paths::fold_case(&l.path)))
+        {
+            continue;
+        }
+        // Do not infer a child rename while its parent's spelling is itself ambiguous.
+        if paths::parent(&l.path) != paths::parent(&r.path) {
+            continue;
+        }
+        let stale_local = record.path == l.path
+            && (l.is_folder || l.sha256.as_deref() == Some(record.local_hash.as_str()));
+        let stale_remote = record.path == r.path
+            && r.id == record.remote_id
+            && (r.is_folder || r.version == record.remote_version);
+        if !stale_local && !stale_remote {
+            continue;
+        }
+        let (from, to) = if stale_local {
+            (&l.path, &r.path)
+        } else {
+            (&r.path, &l.path)
+        };
+        if l.is_folder {
+            let relevant: Vec<_> = groups
+                .values()
+                .filter(|(ls, rs, recs)| {
+                    ls.iter().any(|e| paths::is_ancestor(&l.path, &e.path))
+                        || rs.iter().any(|e| paths::is_ancestor(&r.path, &e.path))
+                        || recs
+                            .iter()
+                            .any(|e| paths::is_ancestor(&record.path, &e.path))
+                })
+                .collect();
+            if relevant.iter().any(|(ls, rs, recs)| {
+                let ([le], [re], [rec]) = (ls.as_slice(), rs.as_slice(), recs.as_slice()) else {
+                    return true;
+                };
+                let Some(suffix) = le.path.strip_prefix(&format!("{}/", l.path)) else {
+                    return true;
+                };
+                if re.path != format!("{}/{suffix}", r.path)
+                    || rec.path != format!("{}/{suffix}", record.path)
+                    || le.is_folder != re.is_folder
+                    || le.is_folder != rec.is_folder
+                    || !is_synced(&le.path, le.is_folder)
+                    || !is_synced(&re.path, re.is_folder)
+                {
+                    return true;
+                }
+                if stale_local {
+                    !le.is_folder && le.sha256.as_deref() != Some(rec.local_hash.as_str())
+                } else {
+                    re.id != rec.remote_id || (!re.is_folder && re.version != rec.remote_version)
+                }
+            }) {
+                continue;
+            }
+        }
+        covered.push(paths::fold_case(from));
+        let action = if stale_local {
+            Action::RenameLocal {
+                path: from.clone(),
+                to_path: to.clone(),
+                is_folder: l.is_folder,
+                remote: (*r).clone(),
+                sha256: l.sha256.clone(),
+            }
+        } else {
+            Action::RenameRemote {
+                path: from.clone(),
+                to_path: to.clone(),
+                is_folder: l.is_folder,
+                remote: (*r).clone(),
+                sha256: None,
+            }
+        };
+        actions.push(action);
+    }
+    actions
 }
 
 #[cfg(test)]

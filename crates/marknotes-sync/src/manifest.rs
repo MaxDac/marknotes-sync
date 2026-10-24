@@ -176,6 +176,8 @@ mod tests {
             remote_version: "1".into(),
             local_hash: "h".into(),
             synced_at: 5,
+
+            local_deleted: false,
         };
         let folder = SyncRecord {
             path: "F".into(),

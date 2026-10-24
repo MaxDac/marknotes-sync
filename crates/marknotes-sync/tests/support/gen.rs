@@ -639,6 +639,8 @@ pub fn build_input(nodes: &[Node], states: &[NodeState], manifest: &ManifestChoi
                     local_hash_of(n, s.record_hash)
                 },
                 synced_at: 1,
+
+                local_deleted: false,
             });
         }
     }
@@ -867,6 +869,8 @@ pub fn perturb(input: &mut SyncInput, p: &Perturbation) {
                 content_hash(0)
             },
             synced_at: 1,
+
+            local_deleted: false,
         }),
         _ => {}
     }
@@ -941,6 +945,8 @@ pub fn arbitrary_record() -> BoxedStrategy<SyncRecord> {
                 remote_version,
                 local_hash,
                 synced_at,
+
+                local_deleted: false,
             },
         )
         .boxed()
@@ -1434,6 +1440,7 @@ pub fn records(max: usize) -> BoxedStrategy<Vec<SyncRecord>> {
                     content_hash(h)
                 },
                 synced_at: at,
+                local_deleted: false,
                 path,
             })
             .collect();

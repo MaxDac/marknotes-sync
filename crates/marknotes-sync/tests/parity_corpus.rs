@@ -275,6 +275,8 @@ fn reconcile_op() -> BoxedStrategy<Case> {
                     base: has_base.then_some(base),
                     existing_paths,
                     new_id,
+                    conflict_copy_intent: None,
+                    existing_copy: None,
                 };
                 let expected = to_json(&reconcile(&input));
                 Some((to_json(&input), expected))

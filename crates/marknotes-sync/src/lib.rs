@@ -26,7 +26,7 @@ pub use manifest::{
 };
 pub use merge::{merge3, merge_text, ConflictChoice, MergeChunk, MergeResult};
 pub use model::*;
-pub use plan::plan;
+pub use plan::{local_deletions, plan};
 pub use reconcile::reconcile;
 pub use scheduler::Scheduler;
 

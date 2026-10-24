@@ -45,7 +45,7 @@ class FixturesTest {
 
     private fun record(o: JsonObject) = SyncRecord(
         o.str("path"), o.bool("isFolder"), o.str("remoteId"), o.str("remoteVersion"), o.str("localHash"),
-        o.long("syncedAt"),
+        o.long("syncedAt"), (o["localDeleted"] as? JsonPrimitive)?.boolean ?: false,
     )
 
     private fun json(r: RemoteEntry) = buildJsonObject {
@@ -58,6 +58,14 @@ class FixturesTest {
 
     private fun json(a: Action): JsonObject = buildJsonObject {
         when (a) {
+            is Action.RenameLocal -> {
+                put("kind", "renameLocal"); put("path", a.path); put("toPath", a.toPath)
+                put("isFolder", a.isFolder); put("remote", json(a.remote)); put("sha256", s(a.sha256))
+            }
+            is Action.RenameRemote -> {
+                put("kind", "renameRemote"); put("path", a.path); put("toPath", a.toPath)
+                put("isFolder", a.isFolder); put("remote", json(a.remote)); put("sha256", s(a.sha256))
+            }
             is Action.Error -> {
                 put("kind", "error"); put("path", a.path); put("message", a.message)
             }
@@ -126,7 +134,7 @@ class FixturesTest {
             ReconcileInput(
                 i.str("path"), i.str("local"), i.long("localModifiedMillis"), i.str("remote"),
                 remote(i.getValue("remoteEntry").jsonObject), i.strOrNull("base"), i.strings("existingPaths"),
-                i.str("newId"),
+                i.str("newId"), parseCopyIntent(i["conflictCopyIntent"]), parseExistingCopy(i["existingCopy"]),
             ),
         )
         when (outcome) {
@@ -140,6 +148,9 @@ class FixturesTest {
                 put("winner", if (outcome.winner == Side.LOCAL) "local" else "remote")
                 put("copyPath", outcome.copyPath)
                 put("copyText", outcome.copyText)
+                put("copyModifiedMillis", outcome.copyModifiedMillis)
+                put("conflictCopyIntent", copyIntentJson(outcome.conflictCopyIntent))
+                put("reuseCopy", outcome.reuseCopy)
             }
         }
     }

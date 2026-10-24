@@ -5,7 +5,12 @@ use std::sync::{Arc, Mutex};
 
 use crate::manifest::Manifest;
 use crate::merge::{ConflictChoice, MergeChunk, MergeResult};
-use crate::model::{ReconcileInput, ReconcileOutcome, SyncInput, SyncPlan, SyncRecord};
+use crate::model::{LocalEntry, ReconcileInput, ReconcileOutcome, SyncInput, SyncPlan, SyncRecord};
+
+#[uniffi::export]
+pub fn local_deletions(local: Vec<LocalEntry>, records: Vec<SyncRecord>) -> Vec<String> {
+    crate::plan::local_deletions(&local, &records)
+}
 
 #[uniffi::export]
 pub fn plan(input: SyncInput) -> SyncPlan {
