@@ -145,13 +145,13 @@ tests) that fails without the fix.
 
 The simulation found these. Each is a `gap_*` test that pins today's behaviour; they need spec changes first.
 
-| Test | Finding |
-| --- | --- |
-| `gap_folder_delete_races_concurrent_upload` | Deleting a folder on the drive isn't conditional, so it can remove a note another device uploads into it at the same time |
-| `gap_restored_note_deleted_through_stale_record` | With two drives, a note moved away and restored can be deleted through an out-of-date record |
-| `gap_conflicted_copy_mtime` | The spec doesn't say which modification time a conflicted copy gets |
-| `gap_crash_after_copy_duplicates_it` | A crash after writing a conflicted copy can produce a second copy (nothing is lost) |
-| `gap_case_rename_missed_by_another_device` | A case-only rename can stay an error on another device |
+| Test | Finding | Spec issue |
+| --- | --- | --- |
+| `gap_folder_delete_races_concurrent_upload` | Deleting a folder on the drive isn't conditional, so it can remove a note another device uploads into it at the same time | MaxDac/marknotes-spec#38 |
+| `gap_restored_note_deleted_through_stale_record` | With two drives, a note moved away and restored can be deleted through an out-of-date record | MaxDac/marknotes-spec#37 |
+| `gap_conflicted_copy_mtime` | The spec doesn't say which modification time a conflicted copy gets | MaxDac/marknotes-spec#40 |
+| `gap_crash_after_copy_duplicates_it` | A crash after writing a conflicted copy can produce a second copy (nothing is lost) | MaxDac/marknotes-spec#42 |
+| `gap_case_rename_missed_by_another_device` | A case-only rename can stay an error on another device | MaxDac/marknotes-spec#39 |
 
 The executor contract ([`docs/executor-contract.md`](docs/executor-contract.md)) also asks the apps to upload new
-files with create-only semantics, which the spec doesn't yet require.
+files with create-only semantics, which the spec doesn't yet require (MaxDac/marknotes-spec#41).
