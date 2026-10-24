@@ -1,6 +1,5 @@
 package io.github.maxdac.marknotes.sync
 
-import java.io.File
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -17,16 +16,16 @@ import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
- * Runs the marknotes-spec sync fixtures through the Kotlin bindings (JNA + the host library), checking the
- * generated types and the FFI layer as well as the Rust code.
+ * Runs the marknotes-spec fixtures through the Kotlin bindings (JNA + the native library), checking the generated
+ * types and the FFI layer as well as the Rust code. Shared by the JVM tests (bindings/kotlin, host library) and the
+ * Android instrumented tests (bindings/android-test, the libraries from the AAR); each provides [FixtureSource].
  */
 class FixturesTest {
-    private val specDir = File(System.getProperty("marknotes.specDir"))
-
     private fun suite(file: String, run: (JsonObject) -> JsonElement) {
-        val body = Json.parseToJsonElement(File(specDir, "fixtures/$file").readText()).jsonObject
+        val body = Json.parseToJsonElement(FixtureSource.read("fixtures/$file")).jsonObject
         for (case in body.getValue("cases").jsonArray) {
             val c = case.jsonObject
             assertEquals(c.getValue("expected"), run(c.getValue("input").jsonObject), "$file / ${c["name"]}")
@@ -241,8 +240,8 @@ class FixturesTest {
             "manifest/serialize.json", "manifest/build.json", "merge/merge3.json", "merge/conflict-copy-name.json",
         )
         for (folder in listOf("sync", "manifest", "merge")) {
-            for (f in File(specDir, "fixtures/$folder").listFiles { f -> f.name.endsWith(".json") }!!) {
-                assert("$folder/${f.name}" in mapped) { "$folder/${f.name} has no suite" }
+            for (name in FixtureSource.list("fixtures/$folder").filter { it.endsWith(".json") }) {
+                assertTrue("$folder/$name" in mapped, "$folder/$name has no suite")
             }
         }
     }
