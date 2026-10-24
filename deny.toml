@@ -1,0 +1,33 @@
+# cargo-deny (CI job "Dependencies (cargo-deny)"): every dependency must have a license compatible with
+# GPL-3.0-or-later, come from crates.io, and not be duplicated needlessly. Vulnerabilities are checked by the
+# Dependency review job on PRs and by `cargo deny check advisories` in nightly.yml.
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "GPL-3.0-or-later",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[advisories]
+version = 2
+yanked = "deny"

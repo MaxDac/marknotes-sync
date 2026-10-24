@@ -13,7 +13,13 @@ env:
   CARGO_TERM_COLOR: always
   # Must match the wasm-bindgen version pinned in crates/marknotes-sync/Cargo.toml.
   WASM_BINDGEN_VERSION: 0.2.129
+  # Pinned for reproducible Android libraries; keep in step with scripts/android-libs.sh and docs/fdroid.md.
+  NDK_VERSION: 30.0.16248370
+  CARGO_NDK_VERSION: 4.1.2
+  # The seeded randomized tests (TESTING.md) run with their fixed default seeds on PRs; nightly.yml rotates them.
+  PROPTEST_CASES: 256
 
+# The Rust toolchain comes from rust-toolchain.toml: `rustup toolchain install` installs it with its components.
 jobs:
   rust:
     name: Rust (fmt, clippy, tests, spec fixtures)
@@ -22,13 +28,23 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: true
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --locked
+      - name: Tests with the binding layers (ffi, wasm)
+        run: cargo test --workspace --all-features --locked
+      - name: Documentation
+        run: cargo doc --workspace --no-deps --all-features --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - name: Fuzz checks (replayed on the fixtures and saved inputs, without libFuzzer)
+        working-directory: fuzz
+        run: |
+          cargo fmt --check
+          cargo clippy --lib --tests --locked -- -D warnings
+          cargo test --release --lib --locked
 
   npm:
     name: npm package (WebAssembly)
@@ -37,9 +53,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: true
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+      - run: rustup toolchain install && rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
@@ -47,12 +61,17 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      - name: Parity corpus
+        run: cargo test -p marknotes-sync --test parity_corpus --locked -- --ignored
       - name: Build, test and pack
         working-directory: bindings/npm
         run: |
+          npm ci
           npm run build
           npm test
+          npm run typecheck
           npm pack
+          npm run smoke -- marknotes-sync-*.tgz
       - uses: actions/upload-artifact@v7
         with:
           name: npm
@@ -65,13 +84,15 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: true
-      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v6
+      - name: Parity corpus
+        run: cargo test -p marknotes-sync --test parity_corpus --locked -- --ignored
       - run: scripts/kotlin-bindings.sh
       - run: ./gradlew test --console=plain
         working-directory: bindings/kotlin
@@ -81,18 +102,147 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,x86_64-linux-android
+      - run: rustup toolchain install && rustup target add aarch64-linux-android x86_64-linux-android
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-ndk
+          tool: cargo-ndk@${{ env.CARGO_NDK_VERSION }}
+      - name: Install the NDK
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      # Builds, then checks ELF class, 16 KB alignment, dependencies, exports and embedded paths.
       - run: scripts/android-libs.sh
       - uses: actions/upload-artifact@v7
         with:
           name: android-libs
           path: bindings/kotlin/natives/android
+
+  artifacts:
+    name: Release artifacts
+    needs: [npm, android]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: android-libs
+          path: bindings/kotlin/natives/android
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm
+          path: dist
+      - run: scripts/kotlin-bindings.sh
+      - name: Package and check
+        run: |
+          (cd bindings/kotlin && ./gradlew assemble --console=plain)
+          cp bindings/kotlin/build/libs/*.jar bindings/kotlin/build/libs/*.aar dist/
+          scripts/check-artifacts.sh dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kotlin
+          path: bindings/kotlin/build/libs
+
+  emulator:
+    # Runs the shared Kotlin tests (spec fixtures, parity corpus, binding boundary) on Android, against the AAR and
+    # jar as published, in a debug build and in an R8-minified build that uses only the jar's shipped keep rules.
+    name: Android emulator (E2E, API ${{ matrix.api }}${{ matrix.suffix }})
+    needs: [artifacts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { api: 29, target: default, suffix: "" }
+          - { api: 36, target: google_apis, suffix: "" }
+          # 16 KB memory pages, as on recent devices.
+          - { api: 35, target: google_apis_ps16k, suffix: ", 16 KB pages" }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: kotlin
+          path: bindings/kotlin/build/libs
+      - name: Parity corpus
+        run: cargo test -p marknotes-sync --test parity_corpus --locked -- --ignored
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: ${{ matrix.target }}
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: |
+            adb shell getconf PAGE_SIZE
+            bindings/kotlin/gradlew -p bindings/android-test connectedDebugAndroidTest --console=plain
+            bindings/kotlin/gradlew -p bindings/android-test -PtestBuildType=minified connectedMinifiedAndroidTest --console=plain
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: emulator-reports-${{ matrix.api }}${{ matrix.target }}
+          path: bindings/android-test/build/reports
+
+  reproducible:
+    # The Android libraries F-Droid rebuilds must match the released ones byte for byte: build them once from the
+    # registry in one directory, once from vendored sources offline in another (scripts/fdroid-build.sh), and compare.
+    name: Reproducible Android libraries
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: a
+      - uses: actions/checkout@v7
+        with:
+          path: elsewhere/b
+      - run: cd a && rustup toolchain install && rustup target add aarch64-linux-android x86_64-linux-android
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk@${{ env.CARGO_NDK_VERSION }}
+      - name: Install the NDK
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+      - run: a/scripts/android-libs.sh
+      - run: elsewhere/b/scripts/fdroid-build.sh
+        env:
+          CARGO_HOME: ${{ runner.temp }}/other-cargo-home
+      - name: Compare
+        run: |
+          (cd a/bindings/kotlin/natives/android && sha256sum ./*/libmarknotes_sync.so) | tee a.sums
+          (cd elsewhere/b/bindings/kotlin/natives/android && sha256sum ./*/libmarknotes_sync.so) | tee b.sums
+          diff a.sums b.sums
+
+  deny:
+    name: Dependencies (cargo-deny)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
 
   actionlint:
     name: actionlint
