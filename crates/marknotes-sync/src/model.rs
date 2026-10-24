@@ -199,6 +199,8 @@ pub struct ExistingCopy {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
+// Keep exported records flat: UniFFI shares this layout with Kotlin rather than exposing Rust-only boxes.
+#[allow(clippy::large_enum_variant)]
 pub enum ReconcileOutcome {
     /// Both sides hold the same text: record it.
     Same,

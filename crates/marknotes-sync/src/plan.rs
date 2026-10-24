@@ -569,8 +569,12 @@ impl<'a> Planner<'a> {
 
 /// Infer only a unique, record-proven stale spelling. Folder renames require a complete, unchanged stale tree.
 fn case_renames(input: &SyncInput) -> Vec<Action> {
-    let mut groups: HashMap<String, (Vec<&LocalEntry>, Vec<&RemoteEntry>, Vec<&SyncRecord>)> =
-        HashMap::new();
+    type CaseGroup<'a> = (
+        Vec<&'a LocalEntry>,
+        Vec<&'a RemoteEntry>,
+        Vec<&'a SyncRecord>,
+    );
+    let mut groups: HashMap<String, CaseGroup<'_>> = HashMap::new();
     for e in &input.local {
         groups
             .entry(paths::fold_case(&e.path))
@@ -604,7 +608,8 @@ fn case_renames(input: &SyncInput) -> Vec<Action> {
         let ([l], [r], [record]) = (local.as_slice(), remote.as_slice(), records.as_slice()) else {
             continue;
         };
-        if l.path == r.path
+        let metadata_only = l.path == r.path && record.path != l.path;
+        if (l.path == r.path && !metadata_only)
             || l.is_folder != r.is_folder
             || l.is_folder != record.is_folder
             || !is_synced(&l.path, l.is_folder)
@@ -619,7 +624,30 @@ fn case_renames(input: &SyncInput) -> Vec<Action> {
         if paths::parent(&l.path) != paths::parent(&r.path) {
             continue;
         }
-        let stale_local = record.path == l.path
+        let parent = paths::parent(&l.path);
+        if !parent.is_empty()
+            && prefixes(parent).any(|ancestor| {
+                groups
+                    .get(&paths::fold_case(ancestor))
+                    .is_some_and(|(ls, rs, recs)| {
+                        let spellings: HashSet<_> = ls
+                            .iter()
+                            .map(|e| e.path.as_str())
+                            .chain(rs.iter().map(|e| e.path.as_str()))
+                            .chain(recs.iter().map(|e| e.path.as_str()))
+                            .collect();
+                        ls.len() > 1
+                            || rs.len() > 1
+                            || recs.len() > 1
+                            || spellings.len() > 1
+                            || ls.iter().any(|e| !e.is_folder)
+                            || rs.iter().any(|e| !e.is_folder)
+                    })
+            })
+        {
+            continue;
+        }
+        let stale_local = (record.path == l.path || (metadata_only && r.id == record.remote_id))
             && (l.is_folder || l.sha256.as_deref() == Some(record.local_hash.as_str()));
         let stale_remote = record.path == r.path
             && r.id == record.remote_id
@@ -627,7 +655,9 @@ fn case_renames(input: &SyncInput) -> Vec<Action> {
         if !stale_local && !stale_remote {
             continue;
         }
-        let (from, to) = if stale_local {
+        let (from, to) = if metadata_only {
+            (&record.path, &l.path)
+        } else if stale_local {
             (&l.path, &r.path)
         } else {
             (&r.path, &l.path)
@@ -660,7 +690,8 @@ fn case_renames(input: &SyncInput) -> Vec<Action> {
                     return true;
                 }
                 if stale_local {
-                    !le.is_folder && le.sha256.as_deref() != Some(rec.local_hash.as_str())
+                    (!le.is_folder && le.sha256.as_deref() != Some(rec.local_hash.as_str()))
+                        || (metadata_only && re.id != rec.remote_id)
                 } else {
                     re.id != rec.remote_id || (!re.is_folder && re.version != rec.remote_version)
                 }

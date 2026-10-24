@@ -679,8 +679,11 @@ fn run_rename(
         _ => unreachable!(),
     };
     let dev = ctx.dev;
+    let metadata_only =
+        local && w.devices[dev].node(&path).is_none() && w.devices[dev].node(&to_path).is_some();
     if local {
-        let inside = |p: &str| p == path || paths::is_ancestor(&path, p);
+        let source = if metadata_only { &to_path } else { &path };
+        let inside = |p: &str| p == source || paths::is_ancestor(source, p);
         let current = w.devices[dev].list();
         let current_paths: Vec<_> = current
             .iter()
@@ -688,7 +691,9 @@ fn run_rename(
             .map(|e| &e.path)
             .collect();
         let expected_paths: Vec<_> = listed.keys().filter(|p| inside(p)).collect();
-        if current_paths != expected_paths || w.devices[dev].node(&to_path).is_some() {
+        if current_paths != expected_paths
+            || (!metadata_only && w.devices[dev].node(&to_path).is_some())
+        {
             return Err(Stop::Skip("rename tree changed".into()));
         }
         for p in expected_paths {
@@ -705,7 +710,7 @@ fn run_rename(
         },
         true,
         |w| {
-            if local {
+            if local && !metadata_only {
                 let entries = w.devices[dev].remove_tree(&path);
                 for (p, n) in entries {
                     w.devices[dev]
@@ -713,7 +718,7 @@ fn run_rename(
                         .files
                         .insert(format!("{to_path}{}", &p[path.len()..]), n);
                 }
-            } else {
+            } else if !local {
                 w.drives[ctx.drive].rename_case(&path, &to_path, &ctx.remote_listed)?;
             }
             // Rename and state migration are a durable transaction in the reference store.

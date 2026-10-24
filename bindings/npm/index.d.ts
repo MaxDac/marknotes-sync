@@ -164,6 +164,8 @@ export function buildManifest(
 ): string | null;
 export function sha256Hex(bytes: Uint8Array): string;
 export function conflictCopyName(path: string, existingPaths: string[]): string;
+/** Unicode simple case folding, identical to the planner's path comparison. */
+export function foldCase(path: string): string;
 export function isSyncablePath(path: string): boolean;
 export function isSyncedEntry(path: string, isFolder: boolean): boolean;
 export function isAttachmentPath(path: string): boolean;

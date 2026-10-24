@@ -38,6 +38,10 @@ cargo +nightly fuzz run plan -- -max_total_time=60   # libFuzzer, from the repos
 The binding parity tests read the corpus that the Rust side writes:
 `cargo test -p marknotes-sync --test parity_corpus -- --ignored` writes `target/parity/<op>.json` (inputs and
 Rust's outputs); the npm and Kotlin tests compare their results with it, and fail when it is missing.
+The same command executes all `sync/executor-safety.json` scenarios and writes their observed store results to
+`target/parity/executor-safety.json`. Binding fixture runners compare that evidence with the canonical execution
+fixtures; their plan/reconcile/local-deletions fixtures separately exercise the actual binding APIs. Android test
+assets include the generated evidence. Adapter races still require each app's own tests.
 
 Android E2E (needs an emulator or a device, `ANDROID_HOME`, and the libraries from `scripts/android-libs.sh`):
 
@@ -89,7 +93,7 @@ The IDs appear in test names and in [`docs/executor-contract.md`](docs/executor-
 | `PLAN-TOTAL` | `plan` never panics, on any input | properties, fuzz `plan` |
 | `PLAN-DET` | The plan doesn't depend on the order of the listings or records | properties, fuzz `plan` |
 | `PLAN-ERR` | An errored path gets no other action and isn't forgotten; nothing under a case collision or duplicate gets an action | unit_plan_table, properties, regressions D2–D4 |
-| `PLAN-ORDER` | Parents are created before children; folder deletions come last, top-most only | unit_plan_table, properties |
+| `PLAN-ORDER` | Errors first; parents created before children; individually guarded files deleted before deepest-first empty folders | unit_plan_table, properties |
 | `PLAN-ONE` | At most one change per path (a manifest `record` may precede an `uploadRevision`) | properties |
 | `PLAN-IGNORED` | Entries that don't sync get no action but keep their folder | unit_plan_table, properties |
 | `PLAN-NOOP` | Identical sides with matching records give an empty plan | properties |
@@ -141,17 +145,17 @@ tests) that fails without the fix.
 | D17 | npm silently defaulted a missing `version`, `modifiedMillis`, `remoteVersion`, `localHash` or `syncedAt` to `""` or 0 | Fixed: missing fields are an error, as `index.d.ts` and Kotlin already required |
 | D18 | npm `free()` on a scheduler made before a trap reset freed whatever the new instance had at that address | Fixed: a stale scheduler is only detached |
 
-## Behaviour the spec allows but that can lose or duplicate data
+## Safety regressions resolved in 0.3
 
-The simulation found these. Each is a `gap_*` test that pins today's behaviour; they need spec changes first.
+The historical `gap_*` names remain stable, but now assert the corrected canonical behavior.
 
 | Test | Finding | Spec issue |
 | --- | --- | --- |
-| `gap_folder_delete_races_concurrent_upload` | Deleting a folder on the drive isn't conditional, so it can remove a note another device uploads into it at the same time | MaxDac/marknotes-spec#38 |
-| `gap_restored_note_deleted_through_stale_record` | With two drives, a note moved away and restored can be deleted through an out-of-date record | MaxDac/marknotes-spec#37 |
-| `gap_conflicted_copy_mtime` | The spec doesn't say which modification time a conflicted copy gets | MaxDac/marknotes-spec#40 |
-| `gap_crash_after_copy_duplicates_it` | A crash after writing a conflicted copy can produce a second copy (nothing is lost) | MaxDac/marknotes-spec#42 |
-| `gap_case_rename_missed_by_another_device` | A case-only rename can stay an error on another device | MaxDac/marknotes-spec#39 |
+| `gap_folder_delete_races_concurrent_upload` | Concurrent unseen children survive atomic empty-only folder removal | MaxDac/marknotes-spec#38 |
+| `gap_restored_note_deleted_through_stale_record` | Per-drive deletion epochs prevent stale deletions removing a restored note | MaxDac/marknotes-spec#37 |
+| `gap_conflicted_copy_mtime` | Copies retain the losing edit time, including replay and upload | MaxDac/marknotes-spec#40 |
+| `gap_crash_after_copy_duplicates_it` | Durable pre-write intent replays one verified copy with the same id | MaxDac/marknotes-spec#42 |
+| `gap_case_rename_missed_by_another_device` | Record-proven unchanged stale aliases converge | MaxDac/marknotes-spec#39 |
 
-The executor contract ([`docs/executor-contract.md`](docs/executor-contract.md)) also asks the apps to upload new
-files with create-only semantics, which the spec doesn't yet require (MaxDac/marknotes-spec#41).
+The canonical spec and [executor contract](docs/executor-contract.md) require create-only files, copies and folders
+(MaxDac/marknotes-spec#41); `sync_executor_safety` checks the after-listing races and all six conflict crash points.

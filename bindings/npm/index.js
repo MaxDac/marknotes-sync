@@ -31,6 +31,7 @@ export const serializeManifest = guard(glue.serializeManifest, reset);
 export const buildManifest = guard(glue.buildManifest, reset);
 export const sha256Hex = guard(glue.sha256Hex, reset);
 export const conflictCopyName = guard(glue.conflictCopyName, reset);
+export const foldCase = guard(glue.foldCase, reset);
 export const isSyncablePath = guard(glue.isSyncablePath, reset);
 export const isSyncedEntry = guard(glue.isSyncedEntry, reset);
 export const isAttachmentPath = guard(glue.isAttachmentPath, reset);

@@ -785,6 +785,36 @@ fn gap_case_rename_missed_by_another_device() {
     assert!(w.devices[1].file("note.md").is_some());
 }
 
+#[test]
+fn story_case_folder_rename_across_drives_preserves_history() {
+    let mut w = World::new(2, &[&[0, 1], &[0, 1]], 21);
+    let original = shared_note(&mut w, 0, "Work/Sub/Note.md");
+    w.rename(0, "Work", "work");
+    let outcomes = sync(&mut w, 0);
+    assert!(errors(&outcomes).is_empty(), "{outcomes:?}");
+    finish(&mut w);
+    for dev in &w.devices {
+        assert_eq!(
+            dev.text("work/Sub/Note.md").as_deref(),
+            Some(original.as_str())
+        );
+        assert!(dev.file("Work/Sub/Note.md").is_none());
+        for drive in ["drive0", "drive1"] {
+            assert!(
+                dev.record(drive, "work/Sub/Note.md").is_some(),
+                "{} {drive}: {:?}",
+                dev.name,
+                dev.durable.records
+            );
+            assert!(dev.record(drive, "Work/Sub/Note.md").is_none());
+            assert_eq!(
+                dev.base(drive, "work/Sub/Note.md").map(String::as_str),
+                Some(original.as_str())
+            );
+        }
+    }
+}
+
 /// Attachments are uploaded, downloaded and deleted, never merged; a corrupt download writes and records
 /// nothing; the same attachment added on both sides is only recorded.
 #[test]

@@ -24,6 +24,12 @@ import kotlin.test.assertTrue
  * Android instrumented tests (bindings/android-test, the libraries from the AAR); each provides [FixtureSource].
  */
 class FixturesTest {
+    @Test
+    fun simpleFoldGuardsMatchThePlanner() {
+        assertEquals(foldCase("\u017f/\u03a3.md"), foldCase("S/\u03c2.md"))
+        assertTrue(foldCase("\u0130.md") != foldCase("i.md"))
+    }
+
     private fun suite(file: String, run: (JsonObject) -> JsonElement) {
         val body = Json.parseToJsonElement(FixtureSource.read("fixtures/$file")).jsonObject
         for (case in body.getValue("cases").jsonArray) {
@@ -112,6 +118,24 @@ class FixturesTest {
                 put("hasRecord", a.hasRecord)
             }
         }
+    }
+
+    @Test
+    fun localDeletions() = suite("sync/local-deletions.json") { i ->
+        val local = i.getValue("local").jsonArray.map {
+            val o = it.jsonObject
+            LocalEntry(o.str("path"), o.bool("isFolder"), o.long("modifiedMillis"), o.strOrNull("sha256"))
+        }
+        buildJsonObject {
+            put("paths", strings(localDeletions(local, i.getValue("records").jsonArray.map { record(it.jsonObject) })))
+        }
+    }
+
+    @Test
+    fun executorSafetyContract() = suite("sync/executor-safety.json") { i ->
+        val observations = Json.parseToJsonElement(FixtureSource.read("parity/executor-safety.json")).jsonArray
+        val observed = observations.map { it.jsonObject }.single { it.getValue("input") == i }
+        observed.getValue("actual")
     }
 
     @Test
@@ -247,6 +271,7 @@ class FixturesTest {
     @Test
     fun everyOwnedFixtureFileIsMapped() {
         val mapped = setOf(
+            "sync/local-deletions.json", "sync/executor-safety.json",
             "sync/plan.json", "sync/reconcile.json", "sync/multi-drive.json", "manifest/parse.json",
             "manifest/serialize.json", "manifest/build.json", "merge/merge3.json", "merge/conflict-copy-name.json",
         )

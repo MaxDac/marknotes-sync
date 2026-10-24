@@ -407,9 +407,15 @@ proptest! {
                 prop_assert_eq!(remote.get(p).copied(), Some(r), "payload is not the listed entry; {}", shown);
             }
             let ok = match a {
-                Action::RenameLocal { to_path, sha256, is_folder, .. } => {
-                    local.contains_key(p) && remote.contains_key(to_path.as_str())
-                        && (*is_folder || local[p].sha256 == *sha256)
+                Action::RenameLocal { to_path, sha256, is_folder, remote: entry, .. } => {
+                    let source = local.get(p).or_else(|| {
+                        records.get(p).filter(|r| r.remote_id == entry.id)
+                            .and_then(|_| local.get(to_path.as_str()))
+                    });
+                    paths::fold_case(p) == paths::fold_case(to_path)
+                        && remote.get(to_path.as_str()).copied() == Some(entry)
+                        && source.is_some_and(|e| e.is_folder == *is_folder
+                            && (*is_folder || e.sha256 == *sha256))
                 }
                 Action::RenameRemote { to_path, remote: entry, .. } => {
                     remote.get(p).copied() == Some(entry) && local.contains_key(to_path.as_str())

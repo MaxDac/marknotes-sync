@@ -3,7 +3,7 @@
 import {
   type Action, type ConflictChoice, type ReconcileOutcome, type SyncInput, DEFAULT_MAX_PASSES, MANIFEST_PATH,
   SyncScheduler, buildManifest, conflictCopyName, isAttachmentPath, isSyncablePath, isSyncedEntry, merge3, mergeText,
-  parseManifest, plan, readId, reconcile, serializeManifest, sha256Hex, withId,
+  foldCase, localDeletions, parseManifest, plan, readId, reconcile, serializeManifest, sha256Hex, withId,
 } from "@marknotes/sync";
 
 const input: SyncInput = {
@@ -17,6 +17,7 @@ const input: SyncInput = {
 function describe(action: Action): string {
   switch (action.kind) {
     case "error": return action.message;
+    case "renameLocal": case "renameRemote": return `${action.path}:${action.toPath}:${action.sha256 ?? ""}`;
     case "recordFolder": case "createLocalFolder": return action.remoteId;
     case "createRemoteFolder": case "forget": case "uploadNew": case "deleteLocal": return action.path;
     case "uploadRevision": case "download": case "deleteRemote": return action.remote.version;
@@ -28,12 +29,24 @@ function describe(action: Action): string {
   }
 }
 plan(input).actions.map(describe);
+const deleted: string[] = localDeletions(input.local, input.records);
+const folded: string = foldCase("Note.md");
+void [deleted, folded];
 
 const outcome: ReconcileOutcome = reconcile({
   path: "a.md", local: "x", localModifiedMillis: 1, remote: "y", remoteEntry: input.remote[0],
   base: null, existingPaths: ["a.md"], newId: "id",
 });
-if (outcome.kind === "newestWins") { const side: "local" | "remote" = outcome.winner; void side; }
+if (outcome.kind === "newestWins") {
+  const side: "local" | "remote" = outcome.winner;
+  const modified: number = outcome.copyModifiedMillis;
+  const replay = reconcile({
+    path: "a.md", local: "x", localModifiedMillis: 1, remote: "y", remoteEntry: input.remote[0],
+    existingPaths: [outcome.copyPath], newId: "m4n5p6q7", conflictCopyIntent: outcome.conflictCopyIntent,
+    existingCopy: { path: outcome.copyPath, text: outcome.copyText, modifiedMillis: modified },
+  });
+  void [side, replay, outcome.reuseCopy];
+}
 if (outcome.kind === "merged") { const text: string = outcome.text; void text; }
 
 const merged = merge3(undefined, "a", "b");

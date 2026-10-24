@@ -6,6 +6,31 @@ use super::exec::{self, sync_session};
 use super::world::{Fault, FaultAt};
 use super::{quiesce, FaultKind, When, World};
 
+pub fn write_observations(target: &std::path::Path) {
+    let spec = std::env::var_os("MARKNOTES_SPEC_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../spec"));
+    let fixtures: Value = serde_json::from_str(
+        &std::fs::read_to_string(spec.join("fixtures/sync/executor-safety.json")).unwrap(),
+    )
+    .unwrap();
+    let observations: Vec<_> = fixtures["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|case| {
+            let actual = run(&case["input"]);
+            assert_eq!(actual, case["expected"], "{}", case["name"]);
+            json!({ "input": case["input"], "actual": actual })
+        })
+        .collect();
+    std::fs::write(
+        target.join("executor-safety.json"),
+        serde_json::to_vec(&observations).unwrap(),
+    )
+    .unwrap();
+}
+
 fn before(kind: &'static str) -> When {
     When::BeforeAction {
         dev: 0,

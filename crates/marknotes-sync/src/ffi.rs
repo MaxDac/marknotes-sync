@@ -63,6 +63,11 @@ pub fn conflict_copy_name(path: String, existing_paths: Vec<String>) -> String {
 }
 
 #[uniffi::export]
+pub fn fold_case(path: String) -> String {
+    crate::paths::fold_case(&path)
+}
+
+#[uniffi::export]
 pub fn is_syncable_path(path: String) -> bool {
     crate::paths::is_syncable_path(&path)
 }
