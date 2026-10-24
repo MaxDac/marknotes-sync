@@ -24,9 +24,7 @@ pub struct RemoteEntry {
     pub id: String,
     pub is_folder: bool,
     /// Revision of a file, `""` for folders.
-    #[serde(default)]
     pub version: String,
-    #[serde(default)]
     pub modified_millis: i64,
 }
 
@@ -38,11 +36,8 @@ pub struct SyncRecord {
     pub path: String,
     pub is_folder: bool,
     pub remote_id: String,
-    #[serde(default)]
     pub remote_version: String,
-    #[serde(default)]
     pub local_hash: String,
-    #[serde(default)]
     pub synced_at: i64,
 }
 

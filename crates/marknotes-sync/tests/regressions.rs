@@ -8,7 +8,27 @@ use marknotes_sync::plan::{CASE_MESSAGE, CLASH_MESSAGE, DUPLICATE_MESSAGE};
 use marknotes_sync::*;
 use serde_json::{json, Value};
 
-fn plan_json(input: Value) -> Value {
+/// Plans `input`, filling in the fields these tests don't care about (the bindings require them all).
+fn plan_json(mut input: Value) -> Value {
+    let fill = |entries: Option<&mut Value>, defaults: Value| {
+        for entry in entries.and_then(Value::as_array_mut).into_iter().flatten() {
+            for (key, value) in defaults.as_object().unwrap() {
+                entry
+                    .as_object_mut()
+                    .unwrap()
+                    .entry(key.clone())
+                    .or_insert(value.clone());
+            }
+        }
+    };
+    fill(
+        input.get_mut("remote"),
+        json!({ "version": "", "modifiedMillis": 0 }),
+    );
+    fill(
+        input.get_mut("records"),
+        json!({ "remoteVersion": "", "localHash": "", "syncedAt": 0 }),
+    );
     let input: SyncInput = serde_json::from_value(input).unwrap();
     serde_json::to_value(plan(&input)).unwrap()["actions"].clone()
 }
@@ -314,5 +334,19 @@ fn d14_with_id_keeps_the_rest_of_the_block_byte_for_byte() {
     assert_eq!(
         front_matter::with_id("---\r\ntitle: a\n---  \nBody", "00000000"),
         "---\r\nid: 00000000\r\ntitle: a\n---  \nBody"
+    );
+}
+
+// D16: simple case folding includes the S mappings that lowercasing misses.
+
+#[test]
+fn d16_case_folding_uses_the_s_mappings() {
+    assert_eq!(
+        paths::fold_case("\u{FB05}.md"),
+        paths::fold_case("\u{FB06}.md")
+    );
+    assert_eq!(
+        paths::conflict_copy_name("\u{1FD3}.md", &["\u{0390} (conflicted copy).md".into()]),
+        "\u{1FD3} (conflicted copy) 2.md"
     );
 }

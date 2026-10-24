@@ -73,6 +73,20 @@ test("object fields: integer times must be safe integers, other types are reject
   assert.throws(() => sync.plan(null), Error);
 });
 
+test("object fields: every required field of a remote entry or a record is required", () => {
+  for (const field of ["path", "id", "isFolder", "version", "modifiedMillis"]) {
+    const entry = remote();
+    delete entry[field];
+    assert.throws(() => sync.plan({ local: [], remote: [entry], records: [] }), new RegExp(field), field);
+    assert.throws(() => sync.plan({ local: [], remote: [{ ...remote(), [field]: undefined }], records: [] }), Error, field);
+  }
+  for (const field of ["path", "isFolder", "remoteId", "remoteVersion", "localHash", "syncedAt"]) {
+    const entry = record();
+    delete entry[field];
+    assert.throws(() => sync.plan({ local: [], remote: [], records: [entry] }), new RegExp(field), field);
+  }
+});
+
 test("object fields: optional fields accept undefined and null", () => {
   const out = sync.plan({ local: [{ path: "a.md", isFolder: false, sha256: "h" }], remote: [], records: [], manifest: null });
   assert.deepEqual(out.actions, [{ kind: "uploadNew", path: "a.md" }]);
@@ -115,6 +129,7 @@ test("after a reset the module works and older schedulers refuse to run", () => 
   assert.equal(sync.sha256Hex(new TextEncoder().encode("abc")),
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
   const after = new sync.SyncScheduler(["a"], 1);
+  before.free(); // must not free `after`, which may sit at the same address in the new instance
   assert.equal(after.next(), "a");
   after.free();
 });
