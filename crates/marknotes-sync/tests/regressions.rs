@@ -300,3 +300,19 @@ fn d12_manifest_millis_are_truncated_and_saturate() {
     let m = parse_manifest(r#"{"format":1,"deviceId":"d","updatedAt":-1e300,"files":{}}"#).unwrap();
     assert_eq!(m.updated_at, i64::MIN);
 }
+
+/// D14 (found by the FM-ID property): "Any other front-matter keys are kept verbatim". `with_id` rebuilt the whole
+/// block with the opening fence's line ending, so a key line ending in a carriage return in an LF block lost it,
+/// mixed line endings were normalised, and fence lines lost trailing spaces. It now only replaces or inserts the
+/// `id` line.
+#[test]
+fn d14_with_id_keeps_the_rest_of_the_block_byte_for_byte() {
+    assert_eq!(
+        front_matter::with_id("---\ntrailing \r\r\n---\n", "00000000"),
+        "---\nid: 00000000\ntrailing \r\r\n---\n"
+    );
+    assert_eq!(
+        front_matter::with_id("---\r\ntitle: a\n---  \nBody", "00000000"),
+        "---\r\nid: 00000000\r\ntitle: a\n---  \nBody"
+    );
+}
