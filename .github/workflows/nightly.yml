@@ -88,8 +88,10 @@ jobs:
           tool: cargo-mutants
       - name: cargo mutants
         run: |
+          # Exit codes: 0 all caught, 2 mutants missed, 3 timeouts (report only); anything else means the run broke.
+          status=0
           cargo mutants --package marknotes-sync --exclude 'crates/marknotes-sync/src/ffi.rs' \
-            --exclude 'crates/marknotes-sync/src/wasm.rs' --jobs 2 --timeout-multiplier 3 --no-shuffle || true
+            --exclude 'crates/marknotes-sync/src/wasm.rs' --jobs 2 --timeout-multiplier 3 --no-shuffle || status=$?
           {
             echo "## Surviving mutants"
             echo
@@ -97,6 +99,8 @@ jobs:
             cat mutants.out/missed.txt 2>/dev/null || echo "(none)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          case "$status" in 0|2|3) ;; *) echo "::error::cargo mutants failed with exit code $status"; exit "$status" ;; esac
+          test -f mutants.out/outcomes.json || { echo "::error::cargo mutants wrote no outcomes"; exit 1; }
       - uses: actions/upload-artifact@v7
         with:
           name: mutants

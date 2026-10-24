@@ -142,6 +142,8 @@ jobs:
       - run: scripts/kotlin-bindings.sh
       - name: Package and check
         run: |
+          mkdir -p bindings/kotlin/natives/jvm/linux-x86-64
+          cp target/release/libmarknotes_sync.so bindings/kotlin/natives/jvm/linux-x86-64/
           (cd bindings/kotlin && ./gradlew assemble --console=plain)
           cp bindings/kotlin/build/libs/*.jar bindings/kotlin/build/libs/*.aar dist/
           scripts/check-artifacts.sh dist

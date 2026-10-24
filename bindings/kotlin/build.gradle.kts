@@ -2,7 +2,7 @@
 //  - marknotes-sync-kotlin-<v>.jar: the bindings (needs JNA at runtime; works on the JVM and on Android);
 //  - marknotes-sync-natives-<v>.jar: the host libraries for JVM tests, under JNA's resource prefixes;
 //  - marknotes-sync-android-<v>.aar: the Android libraries (jni/<abi>/libmarknotes_sync.so).
-// The generated sources (src/main/kotlin) and the native libraries (natives/) are produced by scripts/kotlin.sh.
+// The generated sources (src/main/kotlin) and the native libraries (natives/) are produced by scripts/kotlin-bindings.sh.
 import java.time.LocalDateTime
 import java.util.jar.Attributes
 import java.util.jar.JarEntry

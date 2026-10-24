@@ -28,7 +28,7 @@ The core does no I/O. A sync pass in an app is:
    it hasn't changed; upload it to `.marknotes/manifest.json`.
 
 With several drives, `SyncScheduler(driveIds, maxPasses)` says which drive to sync next: call `next()`, sync that
-drive, `report(id, localChanges, ok)`, until `next()` returns nothing.
+drive, `report(id, localChanges, failed)` (`failed` is `false` after a successful pass), until `next()` returns nothing.
 
 The apps must run the actions as [docs/executor-contract.md](docs/executor-contract.md) says (conditional uploads and
 deletions, what to do after a failure or a crash, when to save the records); the simulation tests check the core

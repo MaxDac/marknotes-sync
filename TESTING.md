@@ -28,7 +28,8 @@ behaviour they check is traced back to [marknotes-spec](https://github.com/MaxDa
 git submodule update --init                       # the spec fixtures
 cargo test --workspace --all-features             # all Rust layers, as CI runs them
 cargo test -p marknotes-sync --test simulation    # one layer
-cd bindings/npm && npm ci && npm run build && npm test && npm run typecheck && npm pack && npm run smoke
+cargo test -p marknotes-sync --test parity_corpus -- --ignored   # the parity corpus the binding tests need
+cd bindings/npm && npm ci && npm run build && npm test && npm run typecheck && npm pack && npm run smoke -- marknotes-sync-*.tgz
 scripts/kotlin-bindings.sh && (cd bindings/kotlin && ./gradlew test)
 (cd fuzz && cargo test --release --lib)          # the fuzz checks, replayed without libFuzzer
 cargo +nightly fuzz run plan -- -max_total_time=60   # libFuzzer, from the repository root (Linux, macOS)
@@ -36,7 +37,7 @@ cargo +nightly fuzz run plan -- -max_total_time=60   # libFuzzer, from the repos
 
 The binding parity tests read the corpus that the Rust side writes:
 `cargo test -p marknotes-sync --test parity_corpus -- --ignored` writes `target/parity/<op>.json` (inputs and
-Rust's outputs); the npm and Kotlin tests compare their results with it. Without it they skip, except in CI.
+Rust's outputs); the npm and Kotlin tests compare their results with it, and fail when it is missing.
 
 Android E2E (needs an emulator or a device, `ANDROID_HOME`, and the libraries from `scripts/android-libs.sh`):
 
@@ -136,6 +137,9 @@ tests) that fails without the fix.
 | D13 | The README gave another JNA version than the build | Fixed |
 | D14 | `withId` rewrote the whole front-matter block, changing line endings and stray carriage returns | Fixed: only the `id` line changes |
 | D15 | npm results were built by assignment, so `parseManifest` lost a file named `__proto__` | Fixed: results go through `JSON.parse`; integers that aren't safe still throw (found by the parity corpus) |
+| D16 | Case folding lowercased characters outside a hand-written list, missing `S` mappings such as U+FB05 → U+FB06 and U+1FD3 → U+0390 | Fixed: a table generated from Unicode 17.0.0 CaseFolding.txt (`scripts/gen-case-folding.py`) |
+| D17 | npm silently defaulted a missing `version`, `modifiedMillis`, `remoteVersion`, `localHash` or `syncedAt` to `""` or 0 | Fixed: missing fields are an error, as `index.d.ts` and Kotlin already required |
+| D18 | npm `free()` on a scheduler made before a trap reset freed whatever the new instance had at that address | Fixed: a stale scheduler is only detached |
 
 ## Behaviour the spec allows but that can lose or duplicate data
 
