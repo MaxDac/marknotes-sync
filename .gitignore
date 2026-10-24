@@ -8,4 +8,14 @@ node_modules/
 /bindings/kotlin/.kotlin/
 /bindings/kotlin/src/main/kotlin/
 /bindings/kotlin/natives/
+/bindings/android-test/build/
+/bindings/android-test/.gradle/
+/bindings/android-test/.kotlin/
+/bindings/android-test/local.properties
 
+/vendor/
+/.cargo/
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/

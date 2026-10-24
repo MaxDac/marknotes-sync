@@ -1,0 +1,64 @@
+# Fuzz targets for cargo-fuzz (nightly Rust): `cargo +nightly fuzz run <target>` from the repository root. Run by
+# nightly.yml; see TESTING.md. A separate workspace, so the main build, clippy and cargo-deny never see it.
+[package]
+name = "marknotes-sync-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-or-later"
+
+[lib]
+path = "src/lib.rs"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+marknotes-sync = { path = "../crates/marknotes-sync" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "plan"
+path = "fuzz_targets/plan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "reconcile"
+path = "fuzz_targets/reconcile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "merge"
+path = "fuzz_targets/merge.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest"
+path = "fuzz_targets/manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "front_matter"
+path = "fuzz_targets/front_matter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "paths"
+path = "fuzz_targets/paths.rs"
+test = false
+doc = false
+bench = false

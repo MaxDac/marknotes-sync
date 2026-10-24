@@ -27,3 +27,6 @@ uniffi = { version = "0.32", optional = true }
 # Pinned: must match the wasm-bindgen CLI used by bindings/npm/build.mjs and CI.
 wasm-bindgen = { version = "=0.2.129", optional = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
+
+[dev-dependencies]
+proptest = { version = "1.12", default-features = false, features = ["std"] }

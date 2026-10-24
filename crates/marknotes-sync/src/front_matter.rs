@@ -12,9 +12,29 @@ fn is_fence(line: &str) -> bool {
     line.trim_end_matches([' ', '\t']) == DELIMITER
 }
 
-/// Splits `text` into the front-matter block (both fences and the trailing line break, or "" when there is
-/// none) and the body.
+const BOM: &str = "\u{feff}";
+
+/// `text` split into its leading UTF-8 byte order mark ("" when there is none) and the rest.
+fn split_bom(text: &str) -> (&str, &str) {
+    match text.strip_prefix(BOM) {
+        Some(rest) => (BOM, rest),
+        None => ("", text),
+    }
+}
+
+/// Splits `text` into the front-matter block (a leading byte order mark, both fences and the trailing line break,
+/// or "" when there is no block) and the body.
 pub fn split(text: &str) -> (&str, &str) {
+    let (bom, rest) = split_bom(text);
+    let (header, body) = split_block(rest);
+    if header.is_empty() {
+        ("", text)
+    } else {
+        (&text[..bom.len() + header.len()], body)
+    }
+}
+
+fn split_block(text: &str) -> (&str, &str) {
     let Some(first_end) = text.find('\n') else {
         return ("", text);
     };
@@ -74,35 +94,56 @@ pub fn read_id(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `text` with its front-matter `id` set to `id`: an existing `id:` line is replaced, otherwise `id` is added
-/// as the first key (and the block is created when missing). The block keeps its line endings.
+/// `text` with its front-matter `id` set to `id`: the first `id:` line is replaced (keeping its line ending),
+/// otherwise `id` is added as the first key with the opening fence's line ending (and the block is created when
+/// missing). Every other byte of the text is kept as it is: the other keys, the fences and their line endings, a
+/// leading byte order mark.
 pub fn with_id(text: &str, id: &str) -> String {
-    let (header, body) = split(text);
+    let (bom, rest) = split_bom(text);
+    let (header, body) = split_block(rest);
     if header.is_empty() {
-        return format!("{DELIMITER}\nid: {id}\n{DELIMITER}\n{body}");
+        return format!("{bom}{DELIMITER}\nid: {id}\n{DELIMITER}\n{body}");
     }
-    let newline = if header.split('\n').next().is_some_and(|l| l.ends_with('\r')) {
-        "\r\n"
-    } else {
-        "\n"
-    };
-    let mut lines: Vec<String> = header_lines(header)
-        .into_iter()
-        .map(str::to_string)
-        .collect();
-    let new_line = format!("id: {id}");
-    match lines.iter().position(|l| id_line_value(l).is_some()) {
-        Some(i) => lines[i] = new_line,
-        None => lines.insert(0, new_line),
+    // Byte ranges of the header's lines, each without its '\n' (and without one '\r' before it).
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while start < header.len() {
+        let end = header[start..]
+            .find('\n')
+            .map_or(header.len(), |i| start + i);
+        let content_end = if header[start..end].ends_with('\r') {
+            end - 1
+        } else {
+            end
+        };
+        lines.push(start..content_end);
+        start = end + 1;
     }
-    let mut out = String::from(DELIMITER);
-    for l in &lines {
-        out.push_str(newline);
-        out.push_str(l);
+    let inner = &lines[1..lines.len() - 1];
+    let mut out = String::with_capacity(text.len() + id.len() + 6);
+    out.push_str(bom);
+    match inner
+        .iter()
+        .find(|r| id_line_value(&header[(*r).clone()]).is_some())
+    {
+        Some(r) => {
+            out.push_str(&header[..r.start]);
+            out.push_str("id: ");
+            out.push_str(id);
+            out.push_str(&header[r.end..]);
+        }
+        None => {
+            let after_fence = lines[0].end;
+            let fence_end = header[after_fence..]
+                .find('\n')
+                .map_or(header.len(), |i| after_fence + i + 1);
+            out.push_str(&header[..fence_end]);
+            out.push_str("id: ");
+            out.push_str(id);
+            out.push_str(&header[after_fence..fence_end]);
+            out.push_str(&header[fence_end..]);
+        }
     }
-    out.push_str(newline);
-    out.push_str(DELIMITER);
-    out.push_str(newline);
     out.push_str(body);
     out
 }

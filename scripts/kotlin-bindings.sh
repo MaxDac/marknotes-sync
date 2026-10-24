@@ -5,6 +5,8 @@ cd "$(dirname "$0")/.."
 
 # UniFFI reads its metadata from the symbol table, which the release profile's strip = true removes.
 export CARGO_PROFILE_RELEASE_STRIP=debuginfo
+# shellcheck source=lib/reproducible.sh
+source scripts/lib/reproducible.sh
 cargo build --release --locked -p marknotes-sync --features uniffi
 case "$(uname -s)" in
   Linux*) lib=target/release/libmarknotes_sync.so ;;

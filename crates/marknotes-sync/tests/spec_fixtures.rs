@@ -216,6 +216,14 @@ fn front_matter_with_id() {
 }
 
 #[test]
+fn note_ids_validation() {
+    run(
+        "note-ids/validation.json",
+        |i| json!({ "valid": front_matter::is_valid_id(str_of(i, "value")) }),
+    );
+}
+
+#[test]
 fn attachments_is_attachment_path() {
     run(
         "attachments/is-attachment-path.json",

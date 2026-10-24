@@ -26,10 +26,14 @@ checked out as the `spec/` submodule (`git submodule update --init`).
 | --- | --- |
 | `crates/marknotes-sync/src/` | `plan.rs`, `reconcile.rs`, `merge.rs`, `manifest.rs`, `scheduler.rs`, `paths.rs`, `front_matter.rs`, `hashing.rs`, `model.rs`; `ffi.rs` (UniFFI, feature `uniffi`) and `wasm.rs` (wasm-bindgen, feature `wasm`) |
 | `crates/marknotes-sync/tests/spec_fixtures.rs` | Runs every fixture under `spec/fixtures/` this crate covers (`MARKNOTES_SPEC_DIR` overrides the path); fails on any file in `sync/`, `manifest/` or `merge/` without a runner |
+| `crates/marknotes-sync/tests/` (others) | `unit_*.rs` (rule tables), `regressions.rs` (defect register), `properties.rs` (proptest), `simulation.rs` + `sim/` (reference executor and no-loss oracle), `parity_corpus.rs` (inputs for the binding parity tests); see TESTING.md |
+| `fuzz/` | cargo-fuzz targets (a separate workspace); the checks live in `src/lib.rs` and are replayed by `cargo test --lib` |
 | `uniffi-bindgen/` | The UniFFI bindgen binary, pinned to the crate's UniFFI version |
-| `bindings/npm/` | npm package `@marknotes/sync`: `build.mjs` (wasm inlined as base64), hand-written `index.d.ts`, Node fixture tests |
-| `bindings/kotlin/` | Gradle project: tests the generated Kotlin bindings on the JVM and packs the jar, natives jar and AAR |
-| `scripts/` | `kotlin-bindings.sh` (host library + Kotlin bindings), `android-libs.sh` (cargo-ndk, arm64-v8a and x86_64) |
+| `bindings/npm/` | npm package `@marknotes/sync`: `build.mjs` (wasm inlined as base64), hand-written `index.d.ts`, Node fixture, boundary and parity tests, `test/types/` (typecheck of `index.d.ts`), `test/smoke.mjs` (installs the packed tgz) |
+| `bindings/kotlin/` | Gradle project: tests the generated Kotlin bindings on the JVM (tests in `src/sharedTest/`, shared with Android) and packs the jar, natives jar and AAR; the jar carries R8 rules |
+| `bindings/android-test/` | Android project running the shared tests against the AAR on an emulator, debug and R8-minified |
+| `docs/` | `executor-contract.md` (how the apps must run a plan), `fdroid.md` (reproducible F-Droid build) |
+| `scripts/` | `kotlin-bindings.sh` (host library + Kotlin bindings), `android-libs.sh` (cargo-ndk, arm64-v8a and x86_64), `lib/reproducible.sh` (path remapping), `check-android-libs.sh` (ELF checks), `check-artifacts.sh` (release contents), `fdroid-build.sh` (offline, vendored build) |
 
 ## Build and test
 
@@ -37,12 +41,15 @@ These mirror `.github/workflows/ci.yml`:
 
 | Check | Command |
 | --- | --- |
-| Rust | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`, `cargo test --workspace --locked` |
-| npm | `cd bindings/npm && npm run build && npm test` (needs the `wasm32-unknown-unknown` target and `wasm-bindgen-cli` at the version pinned in `crates/marknotes-sync/Cargo.toml`) |
+| Rust | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`, `cargo test --workspace --locked`, `cargo test --workspace --all-features --locked`, `cargo doc` with `-D warnings`, and in `fuzz/` fmt, clippy and `cargo test --release --lib` |
+| npm | `cargo test -p marknotes-sync --test parity_corpus -- --ignored`, then in `bindings/npm`: `npm ci && npm run build && npm test && npm run typecheck && npm pack && npm run smoke` (needs the `wasm32-unknown-unknown` target and `wasm-bindgen-cli` at the version pinned in `crates/marknotes-sync/Cargo.toml`) |
 | Kotlin | `scripts/kotlin-bindings.sh && (cd bindings/kotlin && ./gradlew test)` (JDK 17+) |
-| Android libraries | `scripts/android-libs.sh` (needs cargo-ndk and an NDK) |
+| Android libraries | `scripts/android-libs.sh`, which also runs `scripts/check-android-libs.sh` (cargo-ndk and the NDK versions pinned in `ci.yml`) |
+| Release artifacts, Android emulator (E2E), Reproducible Android libraries, Dependencies (cargo-deny) | See TESTING.md; `cargo deny check bans licenses sources` |
 
-On Windows run the scripts from Git Bash, and use `.\gradlew.bat`.
+On Windows run the scripts from Git Bash, and use `.\gradlew.bat`. `rust-toolchain.toml` pins Rust for local builds and CI.
+`nightly.yml` runs the deeper checks (rotating seeds, fuzzing, mutation testing, coverage, advisories). Never weaken
+a test to make it pass; see TESTING.md for the policy and the defect register.
 
 PRs also run **Dependency review** (fails on high-severity vulnerabilities), **CodeQL** (Rust, JavaScript/TypeScript,
 Actions) and **actionlint**. The `main` ruleset requires every CI job above plus `Dependency review` and CodeQL

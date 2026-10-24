@@ -1,0 +1,6 @@
+# The exact toolchain every build uses (CI, release, F-Droid): the Android libraries are only reproducible with the same
+# rustc. Bump it in its own PR; the "Reproducible Android libraries" CI job checks the new one. See docs/fdroid.md.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

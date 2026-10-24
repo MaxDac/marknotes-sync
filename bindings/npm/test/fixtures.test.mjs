@@ -1,7 +1,7 @@
 // Runs the marknotes-spec sync fixtures through the WebAssembly package, so the JS boundary (field names, null and
 // undefined, numbers) is checked as well as the Rust code. Set MARKNOTES_SPEC_DIR to use another spec checkout.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,10 @@ import * as sync from "../index.js";
 
 const specDir = process.env.MARKNOTES_SPEC_DIR ?? fileURLToPath(new URL("../../../spec", import.meta.url));
 
+const mapped = new Set();
+
 function suite(file, run) {
+  mapped.add(file);
   test(file, () => {
     const { cases } = JSON.parse(readFileSync(join(specDir, "fixtures", file), "utf8"));
     for (const c of cases) assert.deepEqual(run(c.input), c.expected, `${file} / ${c.name}`);
@@ -59,4 +62,13 @@ test("large modification times survive the boundary", () => {
   const remote = { path: "a.md", id: "r", isFolder: false, version: "v", modifiedMillis: 1_700_000_000_000 };
   const out = sync.plan({ local: [], remote: [remote], records: [] });
   assert.deepEqual(out.actions, [{ kind: "download", path: "a.md", remote }]);
+});
+
+// Like the Rust runner: every fixture file of the folders the core owns must have a runner here.
+test("every owned fixture file is mapped", () => {
+  for (const folder of ["sync", "manifest", "merge"]) {
+    for (const name of readdirSync(join(specDir, "fixtures", folder))) {
+      if (name.endsWith(".json")) assert.ok(mapped.has(`${folder}/${name}`), `${folder}/${name} has no runner`);
+    }
+  }
 });

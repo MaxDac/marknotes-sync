@@ -2,6 +2,8 @@
 
 use std::cmp::Ordering;
 
+use crate::case_folding::SIMPLE_CASE_FOLDING;
+
 pub const NOTE_EXTENSION: &str = ".md";
 pub const ATTACHMENTS_FOLDER: &str = "attachments";
 const ATTACHMENT_EXTENSIONS: [&str; 4] = ["png", "jpg", "gif", "webp"];
@@ -12,43 +14,14 @@ pub fn compare(a: &str, b: &str) -> Ordering {
 }
 
 /// Unicode simple case folding (`C` and `S` mappings of CaseFolding.txt) of one character: one character to one,
-/// so `ß` stays `ß` and `İ` stays `İ`.
+/// so `ß` stays `ß` and `İ` stays `İ`. The table is generated from a pinned Unicode version (see
+/// `scripts/gen-case-folding.py`); lowercasing differs from it for characters such as `ﬅ` and `ΐ`.
 fn fold_char(c: char) -> char {
-    match c {
-        '\u{00B5}' => '\u{03BC}',
-        '\u{017F}' => 's',
-        '\u{0345}' | '\u{1FBE}' => '\u{03B9}',
-        '\u{03C2}' => '\u{03C3}',
-        '\u{03D0}' => '\u{03B2}',
-        '\u{03D1}' => '\u{03B8}',
-        '\u{03D5}' => '\u{03C6}',
-        '\u{03D6}' => '\u{03C0}',
-        '\u{03F0}' => '\u{03BA}',
-        '\u{03F1}' => '\u{03C1}',
-        '\u{03F5}' => '\u{03B5}',
-        '\u{1C80}' => '\u{0432}',
-        '\u{1C81}' => '\u{0434}',
-        '\u{1C82}' => '\u{043E}',
-        '\u{1C83}' => '\u{0441}',
-        '\u{1C84}' | '\u{1C85}' => '\u{0442}',
-        '\u{1C86}' => '\u{044A}',
-        '\u{1C87}' => '\u{0463}',
-        '\u{1C88}' => '\u{A64B}',
-        '\u{1E9B}' => '\u{1E61}',
-        // Cherokee folds to its uppercase letters.
-        '\u{13A0}'..='\u{13F5}' => c,
-        '\u{13F8}'..='\u{13FD}' => char::from_u32(c as u32 - 8).unwrap_or(c),
-        '\u{AB70}'..='\u{ABBF}' => char::from_u32(c as u32 - 0xAB70 + 0x13A0).unwrap_or(c),
-        _ => {
-            let mut lower = c.to_lowercase();
-            match (lower.next(), lower.next()) {
-                (Some(l), None) => l,
-                _ => c,
-            }
-        }
+    match SIMPLE_CASE_FOLDING.binary_search_by_key(&c, |&(from, _)| from) {
+        Ok(index) => SIMPLE_CASE_FOLDING[index].1,
+        Err(_) => c,
     }
 }
-
 /// The key that identifies a sync path: Dropbox and OneDrive ignore case, so paths that differ only in case are
 /// the same path.
 pub fn fold_case(path: &str) -> String {
@@ -98,6 +71,7 @@ fn is_valid_name(value: &str) -> bool {
         && value != "."
         && value != ".."
         && !value.starts_with('.')
+        && !value.chars().any(|c| c.is_ascii_control())
 }
 
 /// Normalizes a relative path (`\` becomes `/`, empty segments are dropped); `None` when a segment is not a
@@ -144,7 +118,7 @@ pub fn is_synced_entry(path: &str, is_folder: bool) -> bool {
 
 /// Name of the copy kept for the losing side of a conflict: `<stem> (conflicted copy).<ext>` next to the note,
 /// or `<stem> (conflicted copy) <n>.<ext>` with the first free `n` (from 2) when that path is taken.
-/// Paths are compared case-insensitively, because some file systems are.
+/// Paths are compared by simple case folding, like sync paths, because some file systems and drives ignore case.
 pub fn conflict_copy_name(path: &str, existing_paths: &[String]) -> String {
     let dir = parent(path);
     let file = name(path);
@@ -153,7 +127,7 @@ pub fn conflict_copy_name(path: &str, existing_paths: &[String]) -> String {
         _ => (file, ""),
     };
     let taken: std::collections::HashSet<String> =
-        existing_paths.iter().map(|p| p.to_lowercase()).collect();
+        existing_paths.iter().map(|p| fold_case(p)).collect();
     let mut n = 1u32;
     loop {
         let candidate_name = if n == 1 {
@@ -166,7 +140,7 @@ pub fn conflict_copy_name(path: &str, existing_paths: &[String]) -> String {
         } else {
             format!("{dir}/{candidate_name}")
         };
-        if !taken.contains(&candidate.to_lowercase()) {
+        if !taken.contains(&fold_case(&candidate)) {
             return candidate;
         }
         n += 1;
@@ -228,6 +202,23 @@ mod tests {
         assert_eq!(fold_case("\u{13A0}"), "\u{13A0}");
         assert_eq!(fold_case("\u{13F8}"), "\u{13F0}");
         assert_eq!(fold_case("\u{212A}"), "k");
+        // S mappings that lowercasing misses.
+        assert_eq!(fold_case("\u{FB05}.md"), fold_case("\u{FB06}.md"));
+        assert_eq!(fold_case("\u{1FD3}"), "\u{0390}");
+        assert_eq!(fold_case("\u{1FE3}"), "\u{03B0}");
+    }
+
+    #[test]
+    fn case_folding_table() {
+        let table = &crate::case_folding::SIMPLE_CASE_FOLDING;
+        assert!(
+            table.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "sorted, no duplicates"
+        );
+        for &(from, to) in table {
+            assert_ne!(from, to);
+            assert_eq!(fold_char(to), to, "{from:?} folds to a folded character");
+        }
     }
 
     #[test]
