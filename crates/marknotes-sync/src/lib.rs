@@ -5,6 +5,7 @@
 //! changed on both sides and [`build_manifest`] at the end. The behaviour is specified in
 //! [marknotes-spec](https://github.com/MaxDac/marknotes-spec) and checked against its fixtures.
 
+mod case_folding;
 pub mod front_matter;
 pub mod hashing;
 pub mod manifest;
