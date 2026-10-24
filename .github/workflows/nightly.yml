@@ -1,0 +1,131 @@
+name: Nightly
+
+# Deeper, slower checks than CI, with fresh randomness every night. A failure prints the seed or the crashing input
+# needed to reproduce it locally (see TESTING.md, "Reproducing a nightly failure").
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Seed for the proptest and simulation runs (default: the run number)"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SEED: ${{ inputs.seed || github.run_number }}
+
+jobs:
+  randomized:
+    name: Randomized tests (rotating seed)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Properties and simulation
+        env:
+          PROPTEST_CASES: 4096
+          MARKNOTES_SIM_RUNS: 5000
+        run: |
+          export MARKNOTES_PROPTEST_SEED="$SEED" MARKNOTES_SIM_SEED="$SEED"
+          echo "Reproduce with: MARKNOTES_PROPTEST_SEED=$SEED MARKNOTES_SIM_SEED=$SEED PROPTEST_CASES=$PROPTEST_CASES MARKNOTES_SIM_RUNS=$MARKNOTES_SIM_RUNS cargo test --release -p marknotes-sync --test properties --test simulation"
+          cargo test --release --locked -p marknotes-sync --test properties --test simulation
+
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [plan, reconcile, merge, manifest, front_matter, paths]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Seed the corpus with the spec fixtures
+        run: |
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          find spec/fixtures -name '*.json' -exec cp {} "fuzz/corpus/${{ matrix.target }}/" \;
+      - name: Fuzz for 15 minutes
+        run: cargo +nightly fuzz run "${{ matrix.target }}" -- -max_total_time=900 -max_len=65536 -timeout=10
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+
+  mutants:
+    # Mutation testing: changes the core's code (operators, conditions, return values) and expects some test to fail.
+    # A surviving mutant is a behaviour no test pins down. Report only; see TESTING.md for the triage policy.
+    name: Mutation testing (report)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      - name: cargo mutants
+        run: |
+          cargo mutants --package marknotes-sync --exclude 'crates/marknotes-sync/src/ffi.rs' \
+            --exclude 'crates/marknotes-sync/src/wasm.rs' --jobs 2 --timeout-multiplier 3 --no-shuffle || true
+          {
+            echo "## Surviving mutants"
+            echo
+            echo '```'
+            cat mutants.out/missed.txt 2>/dev/null || echo "(none)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mutants
+          path: mutants.out
+
+  coverage:
+    name: Coverage (report)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - run: rustup toolchain install && rustup component add llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - run: |
+          cargo llvm-cov --locked -p marknotes-sync --lcov --output-path lcov.info
+          cargo llvm-cov report --summary-only | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: lcov.info
+
+  advisories:
+    name: Security advisories (cargo-deny)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
