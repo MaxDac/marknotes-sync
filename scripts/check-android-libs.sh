@@ -4,7 +4,8 @@
 #   - the ELF machine matches the ABI and the library is a 64-bit shared object;
 #   - every LOAD segment is aligned to at least 16 KB (Android 15+ devices with 16 KB pages);
 #   - it needs only Android's system libraries (no libc++_shared.so or other bundled libraries);
-#   - it exports the UniFFI entry points the Kotlin bindings call, and nothing else outside UniFFI's namespaces;
+#   - it exports the UniFFI entry points the Kotlin bindings call, and nothing else outside UniFFI's namespaces
+#     (its functions and its UNIFFI_META_* metadata);
 #   - no build-machine path (home directories, the checkout, Cargo home) is embedded.
 # Uses READELF (default llvm-readelf, then readelf).
 set -euo pipefail
@@ -39,7 +40,7 @@ for abi in arm64-v8a x86_64; do
     uniffi_marknotes_sync_fn_constructor_syncscheduler_new ffi_marknotes_sync_uniffi_contract_version; do
     grep -qx "$symbol" <<<"$exports" || fail "$lib does not export $symbol"
   done
-  stray="$(grep -Ev '^(uniffi_|ffi_marknotes_sync_)' <<<"$exports" || true)"
+  stray="$(grep -Ev '^(uniffi_|ffi_marknotes_sync_|UNIFFI_META_(MARKNOTES_SYNC_|NAMESPACE_MARKNOTES_SYNC$))' <<<"$exports" || true)"
   [ -z "$stray" ] || fail "$lib exports symbols outside UniFFI: $(head -5 <<<"$stray" | tr '\n' ' ')"
 
   paths="$(grep -aEo '/(home|Users|root|tmp|runner)/[^[:cntrl:]]{0,80}' "$lib" | head -3 || true)"
