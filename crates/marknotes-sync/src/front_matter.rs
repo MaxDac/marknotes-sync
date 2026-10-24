@@ -12,9 +12,29 @@ fn is_fence(line: &str) -> bool {
     line.trim_end_matches([' ', '\t']) == DELIMITER
 }
 
-/// Splits `text` into the front-matter block (both fences and the trailing line break, or "" when there is
-/// none) and the body.
+const BOM: &str = "\u{feff}";
+
+/// `text` split into its leading UTF-8 byte order mark ("" when there is none) and the rest.
+fn split_bom(text: &str) -> (&str, &str) {
+    match text.strip_prefix(BOM) {
+        Some(rest) => (BOM, rest),
+        None => ("", text),
+    }
+}
+
+/// Splits `text` into the front-matter block (a leading byte order mark, both fences and the trailing line break,
+/// or "" when there is no block) and the body.
 pub fn split(text: &str) -> (&str, &str) {
+    let (bom, rest) = split_bom(text);
+    let (header, body) = split_block(rest);
+    if header.is_empty() {
+        ("", text)
+    } else {
+        (&text[..bom.len() + header.len()], body)
+    }
+}
+
+fn split_block(text: &str) -> (&str, &str) {
     let Some(first_end) = text.find('\n') else {
         return ("", text);
     };
@@ -75,11 +95,13 @@ pub fn read_id(text: &str) -> Option<String> {
 }
 
 /// `text` with its front-matter `id` set to `id`: an existing `id:` line is replaced, otherwise `id` is added
-/// as the first key (and the block is created when missing). The block keeps its line endings.
+/// as the first key (and the block is created when missing). The block keeps its line endings, and a leading byte
+/// order mark stays first.
 pub fn with_id(text: &str, id: &str) -> String {
-    let (header, body) = split(text);
+    let (bom, rest) = split_bom(text);
+    let (header, body) = split_block(rest);
     if header.is_empty() {
-        return format!("{DELIMITER}\nid: {id}\n{DELIMITER}\n{body}");
+        return format!("{bom}{DELIMITER}\nid: {id}\n{DELIMITER}\n{body}");
     }
     let newline = if header.split('\n').next().is_some_and(|l| l.ends_with('\r')) {
         "\r\n"
@@ -95,7 +117,8 @@ pub fn with_id(text: &str, id: &str) -> String {
         Some(i) => lines[i] = new_line,
         None => lines.insert(0, new_line),
     }
-    let mut out = String::from(DELIMITER);
+    let mut out = String::from(bom);
+    out.push_str(DELIMITER);
     for l in &lines {
         out.push_str(newline);
         out.push_str(l);

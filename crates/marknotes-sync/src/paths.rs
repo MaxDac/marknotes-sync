@@ -98,6 +98,7 @@ fn is_valid_name(value: &str) -> bool {
         && value != "."
         && value != ".."
         && !value.starts_with('.')
+        && !value.chars().any(|c| c.is_ascii_control())
 }
 
 /// Normalizes a relative path (`\` becomes `/`, empty segments are dropped); `None` when a segment is not a
@@ -144,7 +145,7 @@ pub fn is_synced_entry(path: &str, is_folder: bool) -> bool {
 
 /// Name of the copy kept for the losing side of a conflict: `<stem> (conflicted copy).<ext>` next to the note,
 /// or `<stem> (conflicted copy) <n>.<ext>` with the first free `n` (from 2) when that path is taken.
-/// Paths are compared case-insensitively, because some file systems are.
+/// Paths are compared by simple case folding, like sync paths, because some file systems and drives ignore case.
 pub fn conflict_copy_name(path: &str, existing_paths: &[String]) -> String {
     let dir = parent(path);
     let file = name(path);
@@ -153,7 +154,7 @@ pub fn conflict_copy_name(path: &str, existing_paths: &[String]) -> String {
         _ => (file, ""),
     };
     let taken: std::collections::HashSet<String> =
-        existing_paths.iter().map(|p| p.to_lowercase()).collect();
+        existing_paths.iter().map(|p| fold_case(p)).collect();
     let mut n = 1u32;
     loop {
         let candidate_name = if n == 1 {
@@ -166,7 +167,7 @@ pub fn conflict_copy_name(path: &str, existing_paths: &[String]) -> String {
         } else {
             format!("{dir}/{candidate_name}")
         };
-        if !taken.contains(&candidate.to_lowercase()) {
+        if !taken.contains(&fold_case(&candidate)) {
             return candidate;
         }
         n += 1;

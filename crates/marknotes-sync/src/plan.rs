@@ -10,6 +10,7 @@ use crate::paths;
 
 pub const CLASH_MESSAGE: &str = "is a file on one side and a folder on the other";
 pub const CASE_MESSAGE: &str = "differs only in case from another path";
+pub const DUPLICATE_MESSAGE: &str = "is listed more than once";
 
 pub fn plan(input: &SyncInput) -> SyncPlan {
     Planner::new(input).run()
@@ -28,6 +29,10 @@ struct Planner<'a> {
     remote_folders: HashMap<&'a str, &'a RemoteEntry>,
     remote_files: HashMap<&'a str, &'a RemoteEntry>,
     manifest: Option<Manifest>,
+    /// Paths listed more than once on the same side, or recorded more than once.
+    duplicates: HashSet<&'a str>,
+    /// Folders a listing does not include although it includes entries inside them.
+    implied_folders: HashSet<&'a str>,
     skipped: HashSet<&'a str>,
     pending_local_folder_deletes: Vec<&'a str>,
     pending_remote_folder_deletes: Vec<(&'a str, &'a RemoteEntry)>,
@@ -57,6 +62,20 @@ fn prefixes(path: &str) -> impl Iterator<Item = &str> {
         .chain(std::iter::once(path))
 }
 
+/// Paths that occur more than once in `paths`.
+fn repeated<'a>(paths: impl Iterator<Item = &'a str>) -> HashSet<&'a str> {
+    let mut seen = HashSet::new();
+    paths.filter(|p| !seen.insert(*p)).collect()
+}
+
+/// Folders above the `entries` of one listing that the listing itself does not include.
+fn implied<'a>(entries: impl Iterator<Item = &'a str>, folders: &HashSet<&str>) -> Vec<&'a str> {
+    entries
+        .flat_map(|p| prefixes(p).filter(move |prefix| prefix.len() < p.len()))
+        .filter(|f| !folders.contains(f))
+        .collect()
+}
+
 fn remote_changed(entry: &RemoteEntry, record: &SyncRecord) -> bool {
     entry.version != record.remote_version || entry.id != record.remote_id
 }
@@ -75,6 +94,31 @@ impl<'a> Planner<'a> {
         for r in &input.records {
             records.insert(r.path.as_str(), r);
         }
+        let mut duplicates = repeated(local_all.iter().map(|e| e.path.as_str()));
+        duplicates.extend(repeated(remote_all.iter().map(|e| e.path.as_str())));
+        duplicates.extend(repeated(input.records.iter().map(|r| r.path.as_str())));
+        let listed_local_folders: HashSet<&str> = input
+            .local
+            .iter()
+            .filter(|e| e.is_folder)
+            .map(|e| e.path.as_str())
+            .collect();
+        let listed_remote_folders: HashSet<&str> = input
+            .remote
+            .iter()
+            .filter(|e| e.is_folder)
+            .map(|e| e.path.as_str())
+            .collect();
+        let mut implied_folders: HashSet<&str> = implied(
+            input.local.iter().map(|e| e.path.as_str()),
+            &listed_local_folders,
+        )
+        .into_iter()
+        .collect();
+        implied_folders.extend(implied(
+            input.remote.iter().map(|e| e.path.as_str()),
+            &listed_remote_folders,
+        ));
         let mut planner = Planner {
             local_folders: local_all
                 .iter()
@@ -103,6 +147,8 @@ impl<'a> Planner<'a> {
             record_order: records.values().copied().collect(),
             records,
             manifest: input.manifest.as_deref().and_then(parse_manifest),
+            duplicates,
+            implied_folders,
             skipped: HashSet::new(),
             pending_local_folder_deletes: Vec::new(),
             pending_remote_folder_deletes: Vec::new(),
@@ -139,6 +185,11 @@ impl<'a> Planner<'a> {
             .chain(self.remote_all.iter().map(|e| e.path.as_str()))
             .chain(self.record_order.iter().map(|r| r.path.as_str()))
             .collect();
+        for path in &all {
+            if prefixes(path).any(|p| self.duplicates.contains(p)) {
+                errors.entry(*path).or_insert(DUPLICATE_MESSAGE);
+            }
+        }
         let mut spellings: HashMap<String, HashSet<&str>> = HashMap::new();
         for path in &all {
             for prefix in prefixes(path) {
@@ -232,6 +283,11 @@ impl<'a> Planner<'a> {
     }
 
     fn sync_folder(&mut self, path: &'a str) {
+        if self.implied_folders.contains(path) {
+            // A listing that holds entries inside the folder but not the folder itself: it is certainly there, so
+            // it is never deleted, and without its listing entry it can't be created or recorded either.
+            return;
+        }
         let in_local = self.local_folders.contains(path);
         let remote = self.remote_folders.get(path).copied();
         let record = self.folder_record(path);
