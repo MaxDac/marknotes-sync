@@ -77,7 +77,12 @@ val aarSkeleton = tasks.register("aarSkeleton") {
         val out = dir.get().asFile.apply { mkdirs() }
         out.resolve("AndroidManifest.xml").writeText(
             """<manifest xmlns:android="http://schemas.android.com/apk/res/android" """ +
-                """package="io.github.maxdac.marknotes.sync.natives" />""" + "\n",
+                """package="io.github.maxdac.marknotes.sync.natives">""" + "\n" +
+                // Without uses-sdk the manifest merger treats the library as targeting API 1 and adds
+                // READ_PHONE_STATE and READ/WRITE_EXTERNAL_STORAGE to every app using it. 29 matches
+                // cargo ndk --platform in scripts/android-libs.sh.
+                """    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="29" />""" + "\n" +
+                "</manifest>\n",
         )
         // An empty jar with a fixed entry time, so the AAR is reproducible.
         JarOutputStream(out.resolve("classes.jar").outputStream()).use { jar ->
