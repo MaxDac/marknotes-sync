@@ -1,7 +1,7 @@
 //! Shared sync core of the MarkNotes apps (Android, desktop, web).
 //!
 //! The core is sans-IO: it never touches files, drives, clocks or random numbers. Apps list their local tree and
-//! the drive, call [`plan`], run the returned [`Action`]s with their own stores, call [`reconcile`] for notes that
+//! the drive, call [`plan()`], run the returned [`Action`]s with their own stores, call [`reconcile()`] for notes that
 //! changed on both sides and [`build_manifest`] at the end. The behaviour is specified in
 //! [marknotes-spec](https://github.com/MaxDac/marknotes-spec) and checked against its fixtures.
 
