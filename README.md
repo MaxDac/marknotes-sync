@@ -30,6 +30,15 @@ The core does no I/O. A sync pass in an app is:
 With several drives, `SyncScheduler(driveIds, maxPasses)` says which drive to sync next: call `next()`, sync that
 drive, `report(id, localChanges, ok)`, until `next()` returns nothing.
 
+The apps must run the actions as [docs/executor-contract.md](docs/executor-contract.md) says (conditional uploads and
+deletions, what to do after a failure or a crash, when to save the records); the simulation tests check the core
+against exactly that executor.
+
+Invalid arguments are errors, not silent defaults (since 0.2.0): Kotlin throws `SyncException.InvalidArgument` (a
+negative `maxPasses` or `localChanges`), and JavaScript throws an `Error` for a number that isn't a safe integer, a
+negative count or a missing field. Either way the next call works. If the WebAssembly ever traps, the call throws
+and the module is instantiated again.
+
 ## Using it
 
 Releases publish, for tag `vX.Y.Z`:
@@ -45,7 +54,7 @@ Releases publish, for tag `vX.Y.Z`:
 npm (Electron, Phoenix assets):
 
 ```sh
-npm install https://github.com/MaxDac/marknotes-sync/releases/download/v0.1.0/marknotes-sync-0.1.0.tgz
+npm install https://github.com/MaxDac/marknotes-sync/releases/download/v0.2.0/marknotes-sync-0.2.0.tgz
 ```
 
 ```ts
@@ -68,29 +77,34 @@ repositories {
 }
 
 // :core (pure JVM)
-implementation("io.github.maxdac.marknotes:marknotes-sync-kotlin:0.1.0")
+implementation("io.github.maxdac.marknotes:marknotes-sync-kotlin:0.2.0")
 implementation("net.java.dev.jna:jna:5.19.1")
-testRuntimeOnly("io.github.maxdac.marknotes:marknotes-sync-natives:0.1.0")
+testRuntimeOnly("io.github.maxdac.marknotes:marknotes-sync-natives:0.2.0")
 
 // :app
-implementation("io.github.maxdac.marknotes:marknotes-sync-android:0.1.0@aar")
+implementation("io.github.maxdac.marknotes:marknotes-sync-android:0.2.0@aar")
 implementation("net.java.dev.jna:jna:5.19.1@aar")
 ```
 
+The jar carries the R8/ProGuard rules JNA needs (`META-INF/proguard/marknotes-sync.pro`), so minified release builds
+work without extra rules; the Android E2E tests run against an R8-minified build.
+
 ## Building
 
-Requirements: Rust (stable), plus for the bindings the `wasm32-unknown-unknown` target, `wasm-bindgen-cli` at the
-version pinned in `crates/marknotes-sync/Cargo.toml`, Node 18+, JDK 17+, and for Android `cargo-ndk` with an NDK.
+Requirements: Rust (the version in `rust-toolchain.toml`, which rustup installs), plus for the bindings the
+`wasm32-unknown-unknown` target, `wasm-bindgen-cli` at the version pinned in `crates/marknotes-sync/Cargo.toml`, Node 18+, JDK 17+, and for Android `cargo-ndk` with an NDK.
 
 ```sh
 git submodule update --init
-cargo test --workspace                                     # core + spec fixtures
+cargo test --workspace --all-features                      # core, spec fixtures, properties, simulation
 (cd bindings/npm && npm run build && npm test)             # npm package
 scripts/kotlin-bindings.sh && (cd bindings/kotlin && ./gradlew test)   # Kotlin bindings on the JVM
 scripts/android-libs.sh                                    # Android .so files
 ```
 
-See [AGENTS.md](AGENTS.md) for the layout, rules and release process.
+[TESTING.md](TESTING.md) describes every test layer, the invariants and how to reproduce a failure;
+[docs/fdroid.md](docs/fdroid.md) how to build the Android libraries reproducibly from source, as F-Droid does. See
+[AGENTS.md](AGENTS.md) for the layout, rules and release process.
 
 ## License
 
