@@ -11,6 +11,20 @@ import kotlin.test.assertTrue
 /** Behaviour of the Kotlin bindings that the spec fixtures do not cover: errors, extreme values and threads. */
 class BindingsTest {
     @Test
+    fun folderPreservationAndRecreationCrossTheBoundary() {
+        val remote = RemoteEntry("F", "f", true, "", 0)
+        val record = SyncRecord("F", true, "f", "", "", 0, false, false)
+        val input = SyncInput(emptyList(), listOf(remote), listOf(record), null, RemoteFolderDeletion.UNSUPPORTED)
+        assertEquals(listOf<Action>(Action.PreserveRemoteFolder("F", remote)), plan(input).actions)
+        val preserved = record.copy(remoteFolderPreserved = true)
+        assertEquals(emptyList(), plan(input.copy(records = listOf(preserved))).actions)
+        assertEquals(listOf("F"), recreatedFolders(listOf(LocalEntry("F", true, 0, null)), listOf(preserved)))
+        assertEquals(emptyList(), recreatedFolders(listOf(LocalEntry("F", true, 0, null)), listOf(record)))
+        assertEquals(listOf<Action>(Action.DeleteRemoteFolder("F", remote, listOf("F"))),
+            plan(input.copy(remoteFolderDeletion = RemoteFolderDeletion.ATOMIC_EMPTY_ONLY)).actions)
+    }
+
+    @Test
     fun schedulerRejectsNegativeMaxPasses() {
         val e = assertFailsWith<SyncException.InvalidArgument> { SyncScheduler(listOf("a"), -1) }
         assertEquals("maxPasses must not be negative: -1", e.message)
@@ -36,7 +50,7 @@ class BindingsTest {
     fun extremeTimesSurviveTheBoundary() {
         for (millis in listOf(Long.MIN_VALUE, -1L, 0L, Long.MAX_VALUE)) {
             val remote = RemoteEntry("a.md", "r", false, "v", millis)
-            val actions = plan(SyncInput(emptyList(), listOf(remote), emptyList(), null)).actions
+            val actions = plan(SyncInput(emptyList(), listOf(remote), emptyList(), null, RemoteFolderDeletion.ATOMIC_EMPTY_ONLY)).actions
             assertEquals(listOf<Action>(Action.Download("a.md", remote)), actions)
         }
     }

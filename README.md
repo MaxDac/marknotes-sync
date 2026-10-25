@@ -16,7 +16,9 @@ The core does no I/O. A sync pass in an app is:
    records of the previous sync (`SyncRecord`). Include the entries that are not synced (other files, hidden files
    and folders): they keep their folder from being deleted.
 2. Before planning, call `localDeletions(local, records)` for **every** linked drive and persist `localDeleted = true`
-   on the returned file records. A successful action writes an unflagged record. `plan(input)` returns ordered actions (`kind`: `createRemoteFolder`, `createLocalFolder`, `uploadNew`,
+   on the returned file records. Also call `recreatedFolders(local, records)` on **every** drive and atomically retire
+   only those preserved folder records and their active notices before any drive plans; retain descendant records
+   and bases. A successful action writes an unflagged record. `plan(input)` returns ordered actions (`kind`: `createRemoteFolder`, `createLocalFolder`, `uploadNew`,
    `uploadRevision`, `download`, `deleteLocal`, `deleteRemote`, `reconcile`, `record`, `forget`, `error`, ...). Run each one with the app's stores; a
    failing action adds `"<path>: <message>"` to the pass's errors and the pass goes on.
 3. For `reconcile` (a note changed on both sides), download the remote text, read the base copy if the record has
@@ -38,6 +40,15 @@ drive, `report(id, localChanges, failed)` (`failed` is `false` after a successfu
 The apps must run the actions as [docs/executor-contract.md](docs/executor-contract.md) says (conditional uploads and
 deletions, what to do after a failure or a crash, when to save the records); the simulation tests check the core
 against exactly that executor.
+
+Since 0.4.0, adapters explicitly unable to delete a folder atomically and only when empty pass
+`remoteFolderDeletion: "unsupported"`. The planner then emits `preserveRemoteFolder`, not a delete request:
+atomically save `remoteFolderPreserved` and a durable per-drive manual-removal notice. Repeated syncs/restarts
+neither recreate the unchanged folder locally nor duplicate its notice. Acknowledgement is durable; new content,
+local recreation, replacement identities or confirmed remote absence retire that lifecycle. Omission retains the
+strict `"atomicEmptyOnly"` contract. Runtime failures are still errors, never a reason to fall back to recursive
+deletion or pretend preservation succeeded. This adds a public record field, enum and action to Rust/Kotlin/npm:
+consumers must regenerate Kotlin bindings and handle the new action when upgrading from 0.3.x.
 
 Invalid arguments are errors, not silent defaults (since 0.2.0): Kotlin throws `SyncException.InvalidArgument` (a
 negative `maxPasses` or `localChanges`), and JavaScript throws an `Error` for a number that isn't a safe integer, a

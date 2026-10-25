@@ -641,6 +641,8 @@ pub fn build_input(nodes: &[Node], states: &[NodeState], manifest: &ManifestChoi
                 synced_at: 1,
 
                 local_deleted: false,
+
+                remote_folder_preserved: false,
             });
         }
     }
@@ -702,6 +704,7 @@ pub fn build_input(nodes: &[Node], states: &[NodeState], manifest: &ManifestChoi
         remote,
         records,
         manifest,
+        remote_folder_deletion: Default::default(),
     }
 }
 
@@ -723,7 +726,23 @@ pub fn scenario(max_steps: usize) -> BoxedStrategy<(Vec<Node>, SyncInput)> {
 /// A consistent planner input: unique paths per side, prefix-closed listings, each path the same kind on every
 /// side and in the records. Paths may differ only in case (the planner reports those).
 pub fn sync_input(max_steps: usize) -> BoxedStrategy<SyncInput> {
-    scenario(max_steps).prop_map(|(_, input)| input).boxed()
+    (
+        scenario(max_steps),
+        any::<bool>(),
+        vec(any::<bool>(), 0..=max_steps * 2),
+    )
+        .prop_map(|((_, mut input), unsupported, preserved)| {
+            input.remote_folder_deletion = if unsupported {
+                marknotes_sync::RemoteFolderDeletion::Unsupported
+            } else {
+                marknotes_sync::RemoteFolderDeletion::AtomicEmptyOnly
+            };
+            for (record, preserved) in input.records.iter_mut().zip(preserved) {
+                record.remote_folder_preserved = record.is_folder && preserved;
+            }
+            input
+        })
+        .boxed()
 }
 
 /// Both sides identical, every synced entry recorded as it is, no case collisions: a sync with nothing to do.
@@ -871,6 +890,8 @@ pub fn perturb(input: &mut SyncInput, p: &Perturbation) {
             synced_at: 1,
 
             local_deleted: false,
+
+            remote_folder_preserved: false,
         }),
         _ => {}
     }
@@ -936,17 +957,22 @@ pub fn arbitrary_record() -> BoxedStrategy<SyncRecord> {
         any_short_string(3),
         prop_oneof![(0u8..3).prop_map(content_hash), any_short_string(4)],
         any::<i64>(),
+        any::<bool>(),
     )
         .prop_map(
-            |(path, is_folder, remote_id, remote_version, local_hash, synced_at)| SyncRecord {
-                path,
-                is_folder,
-                remote_id,
-                remote_version,
-                local_hash,
-                synced_at,
+            |(path, is_folder, remote_id, remote_version, local_hash, synced_at, preserved)| {
+                SyncRecord {
+                    path,
+                    is_folder,
+                    remote_id,
+                    remote_version,
+                    local_hash,
+                    synced_at,
 
-                local_deleted: false,
+                    local_deleted: false,
+
+                    remote_folder_preserved: is_folder && preserved,
+                }
             },
         )
         .boxed()
@@ -960,13 +986,21 @@ pub fn arbitrary_sync_input() -> BoxedStrategy<SyncInput> {
             vec(arbitrary_remote_entry(), 0..10),
             vec(arbitrary_record(), 0..10),
             prop::option::of(json_text()),
+            any::<bool>(),
         )
-            .prop_map(|(local, remote, records, manifest)| SyncInput {
-                local,
-                remote,
-                records,
-                manifest,
-            }),
+            .prop_map(
+                |(local, remote, records, manifest, unsupported)| SyncInput {
+                    local,
+                    remote,
+                    records,
+                    manifest,
+                    remote_folder_deletion: if unsupported {
+                        marknotes_sync::RemoteFolderDeletion::Unsupported
+                    } else {
+                        marknotes_sync::RemoteFolderDeletion::AtomicEmptyOnly
+                    },
+                }
+            ),
         inconsistent_sync_input(12),
     ]
     .boxed()
@@ -1441,6 +1475,7 @@ pub fn records(max: usize) -> BoxedStrategy<Vec<SyncRecord>> {
                 },
                 synced_at: at,
                 local_deleted: false,
+                remote_folder_preserved: false,
                 path,
             })
             .collect();

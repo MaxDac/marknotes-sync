@@ -71,6 +71,7 @@ class ParityTest {
     private fun record(o: JsonObject) = SyncRecord(
         o.str("path"), o.bool("isFolder"), o.str("remoteId"), o.str("remoteVersion"), o.str("localHash"),
         o.long("syncedAt"), (o["localDeleted"] as? JsonPrimitive)?.boolean ?: false,
+        (o["remoteFolderPreserved"] as? JsonPrimitive)?.boolean ?: false,
     )
 
     private fun json(r: RemoteEntry) = buildJsonObject {
@@ -132,6 +133,9 @@ class ParityTest {
                 put("kind", "deleteRemoteFolder"); put("path", a.path); put("remote", json(a.remote))
                 put("forget", strings(a.forget))
             }
+            is Action.PreserveRemoteFolder -> {
+                put("kind", "preserveRemoteFolder"); put("path", a.path); put("remote", json(a.remote))
+            }
             is Action.Reconcile -> {
                 put("kind", "reconcile"); put("path", a.path); put("remote", json(a.remote))
                 put("hasRecord", a.hasRecord)
@@ -169,6 +173,15 @@ class ParityTest {
     }
 
     private val runners: Map<String, (JsonObject) -> JsonElement> = mapOf(
+        "recreatedFolders" to { i ->
+            val local = i.getValue("local").jsonArray.map {
+                val o = it.jsonObject
+                LocalEntry(o.str("path"), o.bool("isFolder"), o.long("modifiedMillis"), o.strOrNull("sha256"))
+            }
+            buildJsonObject {
+                put("paths", strings(recreatedFolders(local, i.getValue("records").jsonArray.map { record(it.jsonObject) })))
+            }
+        },
         "plan" to { i ->
             val input = SyncInput(
                 local = i.getValue("local").jsonArray.map {
@@ -178,6 +191,7 @@ class ParityTest {
                 remote = i.getValue("remote").jsonArray.map { remote(it.jsonObject) },
                 records = i.getValue("records").jsonArray.map { record(it.jsonObject) },
                 manifest = i.strOrNull("manifest"),
+                remoteFolderDeletion = if (i.strOrNull("remoteFolderDeletion") == "unsupported") RemoteFolderDeletion.UNSUPPORTED else RemoteFolderDeletion.ATOMIC_EMPTY_ONLY,
             )
             buildJsonObject { put("actions", JsonArray(plan(input).actions.map { json(it) })) }
         },
@@ -264,6 +278,8 @@ class ParityTest {
     private fun run(op: String) = parity(op, runners[op] ?: fail("no runner for $op"))
 
     @Test fun plan() = run("plan")
+
+    @Test fun recreatedFolders() = run("recreatedFolders")
 
     @Test fun reconcile() = run("reconcile")
 

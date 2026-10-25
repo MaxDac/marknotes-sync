@@ -1350,3 +1350,168 @@ fn randomized_is_deterministic() {
     assert_eq!(a.log, b.log);
     assert_eq!(a.fingerprint(), b.fingerprint());
 }
+
+#[test]
+fn deferred_folder_lost_responses_do_not_duplicate_notice_or_acknowledgement() {
+    use sim::exec::{acknowledge_folder_notice, sync_session};
+    let mut w = World::pair();
+    w.create(0, "F/a.md");
+    quiesce(&mut w);
+    w.delete(0, "F");
+    w.drives[0].supports_empty_delete = false;
+    w.fail_at(0, "preserve remote folder", FaultKind::LostResponse);
+    let out = sync_session(&mut w, 0, 0).unwrap();
+    assert_eq!(out.errors.len(), 1);
+    assert_eq!(out.local_changes, 0);
+    assert_eq!(w.devices[0].durable.folder_notices.len(), 1);
+    assert!(
+        w.devices[0]
+            .record("drive0", "F")
+            .unwrap()
+            .remote_folder_preserved
+    );
+    w.restart(0);
+    assert!(sync_session(&mut w, 0, 0).unwrap().actions.is_empty());
+    let generation = w.devices[0].durable.folder_notices[0].generation;
+    w.fail_at(0, "acknowledge folder notice", FaultKind::LostResponse);
+    assert!(acknowledge_folder_notice(&mut w, 0, generation).is_err());
+    w.restart(0);
+    acknowledge_folder_notice(&mut w, 0, generation).unwrap();
+    assert_eq!(w.devices[0].durable.folder_notices.len(), 1);
+    assert!(w.devices[0].durable.folder_notices[0].acknowledged);
+    assert_eq!(w.drives[0].recursive_delete_requests, 0);
+    w.assert_no_violations();
+}
+
+#[test]
+fn deferred_folder_incomplete_listing_retains_record_and_pending_notice() {
+    use sim::exec::sync_session;
+    let mut w = World::pair();
+    w.mkdir(0, "F");
+    quiesce(&mut w);
+    w.delete(0, "F");
+    w.drives[0].supports_empty_delete = false;
+    assert!(sync_session(&mut w, 0, 0).unwrap().errors.is_empty());
+    let before = w.devices[0].durable.clone();
+    w.drives[0].next_listing = Some(sim::drive::ListingMode::Incomplete);
+    let out = sync_session(&mut w, 0, 0).unwrap();
+    assert!(out.failed && !out.errors.is_empty() && out.actions.is_empty());
+    assert_eq!(w.devices[0].durable, before);
+    w.assert_no_violations();
+}
+
+#[test]
+fn deferred_folder_parent_case_rename_migrates_notice_without_new_generation() {
+    use sim::exec::sync_session;
+    let mut w = World::new(1, &[&[0]], 1);
+    w.mkdir(0, "F/Sub");
+    quiesce(&mut w);
+    w.delete(0, "F/Sub");
+    w.drives[0].supports_empty_delete = false;
+    assert!(sync_session(&mut w, 0, 0).unwrap().errors.is_empty());
+    let generation = w.devices[0].durable.folder_notices[0].generation;
+    w.rename(0, "F", "f");
+    let out = sync_session(&mut w, 0, 0).unwrap();
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert!(matches!(
+        out.actions.as_slice(),
+        [Action::RenameRemote { .. }]
+    ));
+    w.restart(0);
+    let out = sync_session(&mut w, 0, 0).unwrap();
+    assert!(out.actions.is_empty(), "{:?}", out.actions);
+    let notice = &w.devices[0].durable.folder_notices[0];
+    assert_eq!(notice.path, "f/Sub");
+    assert_eq!(notice.generation, generation);
+    assert!(notice.active && !notice.acknowledged);
+    assert!(
+        w.devices[0]
+            .record("drive0", "f/Sub")
+            .unwrap()
+            .remote_folder_preserved
+    );
+    assert!(w.devices[0].node("f/Sub").is_none());
+    w.assert_no_violations();
+}
+
+#[test]
+fn deferred_folder_replacement_root_record_crash_retires_old_child_authority() {
+    use sim::exec::sync_session;
+    let mut w = World::new(1, &[&[0]], 1);
+    w.create(0, "F/a.md");
+    quiesce(&mut w);
+    let child = w.drives[0].entry("F/a.md").unwrap().clone();
+    w.delete(0, "F");
+    w.drives[0].supports_empty_delete = false;
+    w.fail_at(0, "drive delete", FaultKind::Fail);
+    assert_eq!(sync_session(&mut w, 0, 0).unwrap().errors.len(), 1);
+    let replacement = w.drives[0].replace_folder_identity("F");
+    w.fail_at(0, "save record", FaultKind::Crash);
+    assert!(sync_session(&mut w, 0, 0).is_err());
+    assert_eq!(
+        w.devices[0].record("drive0", "F").unwrap().remote_id,
+        replacement.id
+    );
+    assert!(w.devices[0].record("drive0", "F/a.md").is_none());
+    assert!(w.devices[0].base("drive0", "F/a.md").is_none());
+    w.restart(0);
+    let out = sync_session(&mut w, 0, 0).unwrap();
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert!(matches!(out.actions.as_slice(), [Action::Download { .. }]));
+    assert_eq!(w.devices[0].file("F/a.md").unwrap().0, child.bytes);
+    assert_eq!(w.drives[0].entry("F/a.md"), Some(&child));
+    assert!(w.devices[0]
+        .durable
+        .folder_notices
+        .iter()
+        .all(|n| !n.active));
+    assert_eq!(w.drives[0].recursive_delete_requests, 0);
+    w.assert_no_violations();
+}
+
+#[test]
+fn deferred_folder_recreation_keeps_replacement_identity_witness_across_restart() {
+    use sim::exec::sync_session;
+    for explicit_recreation in [true, false] {
+        let mut w = World::new(1, &[&[0]], 1);
+        w.create(0, "F/a.md");
+        quiesce(&mut w);
+        let child = w.drives[0].entry("F/a.md").unwrap().clone();
+        w.delete(0, "F");
+        w.drives[0].supports_empty_delete = false;
+        w.fail_at(0, "drive delete", FaultKind::Fail);
+        assert_eq!(sync_session(&mut w, 0, 0).unwrap().errors.len(), 1);
+        w.drives[0].replace_folder_identity("F");
+        if explicit_recreation {
+            w.mkdir(0, "F");
+            w.fail_at(0, "flag local deletions", FaultKind::Crash);
+            assert!(sync_session(&mut w, 0, 0).is_err());
+            assert!(w.devices[0].record("drive0", "F").is_none());
+            assert!(w.devices[0].record("drive0", "F/a.md").is_some());
+            assert!(w.devices[0].base("drive0", "F/a.md").is_some());
+            assert_eq!(w.devices[0].durable.recreated_folder_identities.len(), 1);
+        } else {
+            w.fail_at(0, "save record", FaultKind::Fail);
+            w.hook(
+                When::BeforeAction {
+                    dev: 0,
+                    kind: Some("download"),
+                    path: None,
+                },
+                |w| w.fail_at(0, "drive read", FaultKind::Fail),
+            );
+            assert_eq!(sync_session(&mut w, 0, 0).unwrap().errors.len(), 2);
+        }
+        w.restart(0);
+        let out = sync_session(&mut w, 0, 0).unwrap();
+        assert!(out.errors.is_empty(), "{:?}", out.errors);
+        assert!(!out
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::DeleteRemote { .. })));
+        assert_eq!(w.devices[0].file("F/a.md").unwrap().0, child.bytes);
+        assert_eq!(w.drives[0].entry("F/a.md"), Some(&child));
+        assert!(w.devices[0].durable.recreated_folder_identities.is_empty());
+        w.assert_no_violations();
+    }
+}

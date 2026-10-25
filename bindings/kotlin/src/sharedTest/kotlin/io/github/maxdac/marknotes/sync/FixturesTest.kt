@@ -52,6 +52,7 @@ class FixturesTest {
     private fun record(o: JsonObject) = SyncRecord(
         o.str("path"), o.bool("isFolder"), o.str("remoteId"), o.str("remoteVersion"), o.str("localHash"),
         o.long("syncedAt"), (o["localDeleted"] as? JsonPrimitive)?.boolean ?: false,
+        (o["remoteFolderPreserved"] as? JsonPrimitive)?.boolean ?: false,
     )
 
     private fun json(r: RemoteEntry) = buildJsonObject {
@@ -113,6 +114,9 @@ class FixturesTest {
                 put("kind", "deleteRemoteFolder"); put("path", a.path); put("remote", json(a.remote))
                 put("forget", strings(a.forget))
             }
+            is Action.PreserveRemoteFolder -> {
+                put("kind", "preserveRemoteFolder"); put("path", a.path); put("remote", json(a.remote))
+            }
             is Action.Reconcile -> {
                 put("kind", "reconcile"); put("path", a.path); put("remote", json(a.remote))
                 put("hasRecord", a.hasRecord)
@@ -148,6 +152,7 @@ class FixturesTest {
             remote = i.getValue("remote").jsonArray.map { remote(it.jsonObject) },
             records = i.getValue("records").jsonArray.map { record(it.jsonObject) },
             manifest = i.strOrNull("manifest"),
+            remoteFolderDeletion = if (i.strOrNull("remoteFolderDeletion") == "unsupported") RemoteFolderDeletion.UNSUPPORTED else RemoteFolderDeletion.ATOMIC_EMPTY_ONLY,
         )
         buildJsonObject { put("actions", JsonArray(plan(input).actions.map { json(it) })) }
     }

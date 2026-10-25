@@ -22,6 +22,13 @@ pub fn fold_case(path: &str) -> String {
     crate::paths::fold_case(path)
 }
 
+#[wasm_bindgen(js_name = recreatedFolders)]
+pub fn recreated_folders(local: JsValue, records: JsValue) -> Result<JsValue, JsError> {
+    let local: Vec<LocalEntry> = from_js(local)?;
+    let records: Vec<SyncRecord> = from_js(records)?;
+    to_js(&crate::plan::recreated_folders(&local, &records))
+}
+
 fn from_js<T: DeserializeOwned>(value: JsValue) -> Result<T, JsError> {
     serde_wasm_bindgen::from_value(value).map_err(|e| JsError::new(&e.to_string()))
 }

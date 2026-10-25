@@ -22,6 +22,16 @@ pub struct PendingConflict {
     pub intent: ConflictCopyIntent,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderNotice {
+    pub drive: String,
+    pub path: String,
+    pub remote_id: String,
+    pub generation: u64,
+    pub acknowledged: bool,
+    pub active: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Durable {
     /// The local file system: case-sensitive, like Android's.
@@ -32,6 +42,20 @@ pub struct Durable {
     pub bases: BTreeMap<String, BTreeMap<String, String>>,
     pub pending_conflicts: Vec<PendingConflict>,
     pub copy_intents: BTreeMap<(String, String), ConflictCopyIntent>,
+    pub folder_notices: Vec<FolderNotice>,
+    pub next_folder_generation: u64,
+    /// Survives recreation preflight until root adoption; never inferred from arbitrary archived notices.
+    pub recreated_folder_identities: BTreeMap<(String, String), String>,
+}
+
+impl Durable {
+    pub fn retire_folder_notice(&mut self, drive: &str, path: &str) {
+        for notice in &mut self.folder_notices {
+            if notice.drive == drive && notice.path == path {
+                notice.active = false;
+            }
+        }
+    }
 }
 
 /// The sync in flight: the plan and the listing it was computed from. Lost on a crash.

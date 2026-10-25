@@ -66,6 +66,7 @@ pub struct Drive {
     /// Folded paths whose next read returns damaged bytes (transport corruption).
     pub corrupt_next_read: BTreeSet<String>,
     pub supports_empty_delete: bool,
+    pub declared_folder_deletion: Option<marknotes_sync::RemoteFolderDeletion>,
     pub recursive_delete_requests: usize,
 }
 
@@ -85,12 +86,22 @@ impl Drive {
             next_listing: None,
             corrupt_next_read: BTreeSet::new(),
             supports_empty_delete: true,
+            declared_folder_deletion: None,
             recursive_delete_requests: 0,
         }
     }
 
     pub fn entry(&self, path: &str) -> Option<&DriveEntry> {
         self.entries.get(&key(path))
+    }
+
+    pub fn folder_deletion(&self) -> marknotes_sync::RemoteFolderDeletion {
+        self.declared_folder_deletion
+            .unwrap_or(if self.supports_empty_delete {
+                marknotes_sync::RemoteFolderDeletion::AtomicEmptyOnly
+            } else {
+                marknotes_sync::RemoteFolderDeletion::Unsupported
+            })
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &DriveEntry> {
@@ -281,6 +292,16 @@ impl Drive {
         let remote = e.remote();
         self.entries.insert(key(path), e);
         Ok(remote)
+    }
+
+    /// A provider/user replaces a parent and reattaches its existing children without changing their identities.
+    pub fn replace_folder_identity(&mut self, path: &str) -> RemoteEntry {
+        let generation = self.bump();
+        let id = format!("{}-folder{generation}", self.name);
+        let entry = self.entries.get_mut(&key(path)).expect("folder exists");
+        assert!(entry.is_folder);
+        entry.id = id;
+        entry.remote()
     }
 
     /// Deletes a folder with everything inside. Like Dropbox `delete_v2` and OneDrive, folder deletions are

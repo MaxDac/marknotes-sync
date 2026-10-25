@@ -25,6 +25,7 @@ function read(file) {
 }
 
 const runners = {
+  recreatedFolders: (i) => ({ paths: sync.recreatedFolders(i.local, i.records) }),
   plan: (i) => sync.plan(i),
   reconcile: (i) => sync.reconcile(i),
   merge3: (i) => {

@@ -178,6 +178,8 @@ mod tests {
             synced_at: 5,
 
             local_deleted: false,
+
+            remote_folder_preserved: false,
         };
         let folder = SyncRecord {
             path: "F".into(),

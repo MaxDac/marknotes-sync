@@ -13,7 +13,7 @@
 //!   on Dropbox and OneDrive). A listing can be made to fail or to come back incomplete, and a read can be corrupted
 //!   in transit.
 //! - A **device** has a durable part (files with bytes and modification time, sync records and base copies per
-//!   drive, pending conflicts) and a volatile part (the plan in flight and the listing it came from). A crash
+//!   drive, pending conflicts, folder preservation notices and acknowledgements) and a volatile part (the plan in flight and the listing it came from). A crash
 //!   discards the volatile part; a restart starts from the durable part alone.
 //! - The **world** owns a clock (`time`, plus a per-device skew), a substep counter and the fault injector.
 //!
@@ -27,6 +27,9 @@
 //! substep **fail** (not applied, step error), **lose its response** (applied, but the executor sees an error) or
 //! **crash** the device right after it (applied, then the sync in flight is lost). Hooks run user operations or
 //! other devices' syncs at a session start or before any action (mid-sync edits and concurrent devices).
+//! Deferred-folder fault points are `check preserve remote folder`, `preserve remote folder` (one marker/outbox
+//! transaction) and `acknowledge folder notice`. Recreation retirement runs with `flag local deletions` across
+//! all drives; replacement-identity retirement runs in the folder's `save record` transaction.
 //!
 //! # The no-loss oracle
 //!

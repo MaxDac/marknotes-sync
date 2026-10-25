@@ -12,6 +12,24 @@ const record = (extra = {}) => ({
   path: "a.md", isFolder: false, remoteId: "r", remoteVersion: "v", localHash: "h", syncedAt: 1, ...extra,
 });
 
+test("folder preservation defaults strictly, validates capability and migrates old records", () => {
+  const folder = remote({ path: "F", id: "f", isFolder: true, version: "" });
+  const baseline = record({ path: "F", isFolder: true, remoteId: "f", remoteVersion: "", localHash: "" });
+  const input = { local: [], remote: [folder], records: [baseline] };
+  assert.deepEqual(sync.plan(input).actions, [{ kind: "deleteRemoteFolder", path: "F", remote: folder, forget: ["F"] }]);
+  assert.deepEqual(sync.plan({ ...input, remoteFolderDeletion: "unsupported" }).actions,
+    [{ kind: "preserveRemoteFolder", path: "F", remote: folder }]);
+  assert.deepEqual(sync.plan({ ...input, remoteFolderDeletion: "unsupported",
+    records: [{ ...baseline, remoteFolderPreserved: true }] }).actions, []);
+  assert.deepEqual(sync.recreatedFolders([{ path: "F", isFolder: true }],
+    [{ ...baseline, remoteFolderPreserved: true }, baseline]), ["F"]);
+  assert.deepEqual(sync.recreatedFolders([{ path: "F", isFolder: true }], [baseline]), []);
+  for (const bad of ["recursive", "", null, true, 1]) {
+    assert.throws(() => sync.plan({ ...input, remoteFolderDeletion: bad }), Error);
+  }
+  assert.throws(() => sync.plan({ ...input, records: [{ ...baseline, remoteFolderPreserved: "true" }] }), Error);
+});
+
 function drain(scheduler, changes = 0) {
   const order = [];
   for (let id = scheduler.next(); id !== undefined; id = scheduler.next()) {

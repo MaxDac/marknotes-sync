@@ -5,7 +5,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::manifest::{parse_manifest, Manifest};
-use crate::model::{Action, LocalEntry, RemoteEntry, SyncInput, SyncPlan, SyncRecord};
+use crate::model::{
+    Action, LocalEntry, RemoteEntry, RemoteFolderDeletion, SyncInput, SyncPlan, SyncRecord,
+};
 use crate::paths;
 
 pub const CLASH_MESSAGE: &str = "is a file on one side and a folder on the other";
@@ -33,6 +35,20 @@ pub fn local_deletions(local: &[LocalEntry], records: &[SyncRecord]) -> Vec<Stri
     paths
 }
 
+/// Preserved folder records to retire atomically with their active notices on every linked drive
+/// before planning. Keep descendant records, bases and ordinary folder history.
+pub fn recreated_folders(local: &[LocalEntry], records: &[SyncRecord]) -> Vec<String> {
+    let present: HashSet<&str> = local.iter().map(|e| e.path.as_str()).collect();
+    let mut recreated: Vec<_> = records
+        .iter()
+        .filter(|r| r.is_folder && r.remote_folder_preserved && present.contains(r.path.as_str()))
+        .map(|r| r.path.clone())
+        .collect();
+    recreated.sort_by(|a, b| paths::compare(a, b));
+    recreated.dedup();
+    recreated
+}
+
 struct Planner<'a> {
     local_all: Vec<&'a LocalEntry>,
     remote_all: Vec<&'a RemoteEntry>,
@@ -46,6 +62,7 @@ struct Planner<'a> {
     remote_folders: HashMap<&'a str, &'a RemoteEntry>,
     remote_files: HashMap<&'a str, &'a RemoteEntry>,
     manifest: Option<Manifest>,
+    remote_folder_deletion: RemoteFolderDeletion,
     /// Paths listed more than once on the same side, or recorded more than once.
     duplicates: HashSet<&'a str>,
     /// Folders a listing does not include although it includes entries inside them.
@@ -159,6 +176,7 @@ impl<'a> Planner<'a> {
             record_order: records.values().copied().collect(),
             records,
             manifest: input.manifest.as_deref().and_then(parse_manifest),
+            remote_folder_deletion: input.remote_folder_deletion,
             duplicates,
             implied_folders,
             skipped: HashSet::new(),
@@ -302,11 +320,25 @@ impl<'a> Planner<'a> {
     }
 
     fn folder_record(&self, path: &str) -> Option<&'a SyncRecord> {
-        self.records.get(path).copied().filter(|r| r.is_folder)
+        self.valid_record(path).filter(|r| r.is_folder)
     }
 
     fn file_record(&self, path: &str) -> Option<&'a SyncRecord> {
-        self.records.get(path).copied().filter(|r| !r.is_folder)
+        self.valid_record(path).filter(|r| !r.is_folder)
+    }
+
+    fn valid_record(&self, path: &str) -> Option<&'a SyncRecord> {
+        // Replacing a folder cannot transfer its old subtree's deletion authority to the new identity.
+        if prefixes(path).filter(|p| *p != path).any(|parent| {
+            self.remote_folders.get(parent).is_some_and(|remote| {
+                self.records
+                    .get(parent)
+                    .is_some_and(|record| record.is_folder && record.remote_id != remote.id)
+            })
+        }) {
+            return None;
+        }
+        self.records.get(path).copied()
     }
 
     fn local_hash(&self, path: &str) -> Option<&'a str> {
@@ -334,7 +366,7 @@ impl<'a> Planner<'a> {
         let p = path.to_string();
         match (in_local, remote) {
             (true, Some(remote)) => {
-                if record.is_none_or(|r| r.remote_id != remote.id) {
+                if record.is_none_or(|r| r.remote_id != remote.id || r.remote_folder_preserved) {
                     self.actions.push(Action::RecordFolder {
                         path: p,
                         remote_id: remote.id.clone(),
@@ -342,19 +374,25 @@ impl<'a> Planner<'a> {
                 }
             }
             (true, None) => {
-                if record.is_none() || self.has_local_survivors(path) {
+                if record.is_none_or(|r| r.remote_folder_preserved)
+                    || self.has_local_survivors(path)
+                {
                     self.actions.push(Action::CreateRemoteFolder { path: p });
                 } else {
                     self.pending_local_folder_deletes.push(path);
                 }
             }
             (false, Some(remote)) => {
-                if record.is_none() || self.has_remote_survivors(path) {
+                if record.is_none_or(|r| r.remote_id != remote.id)
+                    || self.has_remote_survivors(path)
+                {
                     self.actions.push(Action::CreateLocalFolder {
                         path: p,
                         remote_id: remote.id.clone(),
                     });
-                } else {
+                } else if self.remote_folder_deletion == RemoteFolderDeletion::AtomicEmptyOnly
+                    || record.is_none_or(|r| !r.remote_folder_preserved)
+                {
                     self.pending_remote_folder_deletes.push((path, remote));
                 }
             }
@@ -506,10 +544,16 @@ impl<'a> Planner<'a> {
                 .then_with(|| paths::compare(a, b))
         });
         for (path, entry) in &remote {
-            self.actions.push(Action::DeleteRemoteFolder {
-                path: path.to_string(),
-                remote: (*entry).clone(),
-                forget: vec![path.to_string()],
+            self.actions.push(match self.remote_folder_deletion {
+                RemoteFolderDeletion::AtomicEmptyOnly => Action::DeleteRemoteFolder {
+                    path: path.to_string(),
+                    remote: (*entry).clone(),
+                    forget: vec![path.to_string()],
+                },
+                RemoteFolderDeletion::Unsupported => Action::PreserveRemoteFolder {
+                    path: path.to_string(),
+                    remote: (*entry).clone(),
+                },
             });
         }
     }
@@ -537,7 +581,7 @@ impl<'a> Planner<'a> {
             if !paths::is_ancestor(folder, &e.path) {
                 return false;
             }
-            let record = self.records.get(e.path.as_str());
+            let record = self.valid_record(&e.path);
             if e.is_folder {
                 record.is_none()
             } else {
@@ -557,9 +601,9 @@ impl<'a> Planner<'a> {
             if !paths::is_ancestor(folder, &e.path) {
                 return false;
             }
-            let record = self.records.get(e.path.as_str());
+            let record = self.valid_record(&e.path);
             if e.is_folder {
-                record.is_none()
+                record.is_none_or(|r| r.remote_id != e.id)
             } else {
                 record.is_none_or(|r| remote_changed(e, r))
             }
@@ -674,6 +718,20 @@ fn case_renames(input: &SyncInput) -> Vec<Action> {
                 })
                 .collect();
             if relevant.iter().any(|(ls, rs, recs)| {
+                if let ([], [re], [rec]) = (ls.as_slice(), rs.as_slice(), recs.as_slice()) {
+                    if rec.is_folder
+                        && rec.remote_folder_preserved
+                        && re.is_folder
+                        && re.id == rec.remote_id
+                        && is_synced(&re.path, true)
+                        && is_synced(&rec.path, true)
+                    {
+                        return rec
+                            .path
+                            .strip_prefix(&format!("{}/", record.path))
+                            .is_none_or(|suffix| re.path != format!("{}/{suffix}", r.path));
+                    }
+                }
                 let ([le], [re], [rec]) = (ls.as_slice(), rs.as_slice(), recs.as_slice()) else {
                     return true;
                 };
@@ -725,6 +783,80 @@ fn case_renames(input: &SyncInput) -> Vec<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parent_case_rename_rejects_unproven_missing_descendants() {
+        for (is_folder, preserved, id) in [
+            (true, false, "child"),
+            (true, true, "replacement"),
+            (false, true, "child"),
+        ] {
+            let input: SyncInput = serde_json::from_value(serde_json::json!({
+                "local": [{"path":"f","isFolder":true}],
+                "remote": [
+                    {"path":"F","id":"parent","isFolder":true,"version":"","modifiedMillis":0},
+                    {"path":"F/Sub","id":id,"isFolder":is_folder,"version":"","modifiedMillis":0}
+                ],
+                "records": [
+                    {"path":"F","isFolder":true,"remoteId":"parent","remoteVersion":"","localHash":"","syncedAt":0},
+                    {"path":"F/Sub","isFolder":is_folder,"remoteId":"child","remoteVersion":"","localHash":"","syncedAt":0,"remoteFolderPreserved":preserved}
+                ],
+                "remoteFolderDeletion":"unsupported"
+            })).unwrap();
+            assert!(plan(&input)
+                .actions
+                .iter()
+                .all(|a| matches!(a, Action::Error { .. })));
+        }
+    }
+
+    #[test]
+    fn replaced_ancestor_cannot_authorize_deleting_unchanged_descendants() {
+        let input: SyncInput = serde_json::from_value(serde_json::json!({
+            "local": [],
+            "remote": [
+                {"path":"F","id":"replacement","isFolder":true,"version":"","modifiedMillis":0},
+                {"path":"F/a.md","id":"same-child","isFolder":false,"version":"v1","modifiedMillis":0}
+            ],
+            "records": [
+                {"path":"F","isFolder":true,"remoteId":"old","remoteVersion":"","localHash":"","syncedAt":0,"remoteFolderPreserved":true},
+                {"path":"F/a.md","isFolder":false,"remoteId":"same-child","remoteVersion":"v1","localHash":"h","syncedAt":0}
+            ],
+            "remoteFolderDeletion":"unsupported"
+        })).unwrap();
+        assert!(matches!(
+            plan(&input).actions.as_slice(),
+            [Action::CreateLocalFolder { .. }, Action::Download { .. }]
+        ));
+    }
+
+    #[test]
+    fn recreation_retires_only_preserved_folder_baselines_in_path_order() {
+        let mut input: SyncInput = serde_json::from_value(serde_json::json!({
+            "local":[{"path":"F","isFolder":true},{"path":"G","isFolder":true}],
+            "remote":[],
+            "records":[
+                {"path":"G","isFolder":true,"remoteId":"g","remoteVersion":"","localHash":"","syncedAt":0,"remoteFolderPreserved":true},
+                {"path":"F","isFolder":true,"remoteId":"f","remoteVersion":"","localHash":"","syncedAt":0},
+                {"path":"F/a.md","isFolder":false,"remoteId":"a","remoteVersion":"v1","localHash":"h","syncedAt":0,"remoteFolderPreserved":true}
+            ]
+        })).unwrap();
+        assert_eq!(recreated_folders(&input.local, &input.records), vec!["G"]);
+        assert!(
+            !input.records[1].remote_folder_preserved,
+            "old records migrate as false"
+        );
+        assert_eq!(
+            input.remote_folder_deletion,
+            RemoteFolderDeletion::AtomicEmptyOnly
+        );
+        input.records[1].remote_folder_preserved = true;
+        input.records.push(input.records[1].clone());
+        assert_eq!(
+            recreated_folders(&input.local, &input.records),
+            vec!["F", "G"]
+        );
+    }
 
     #[test]
     fn case_collisions_inside_a_deleted_folder_keep_it() {

@@ -41,6 +41,19 @@ pub struct SyncRecord {
     pub synced_at: i64,
     #[serde(default)]
     pub local_deleted: bool,
+    /// This drive's folder was retained after local deletion. Bound to `remote_id`, never to a path alone.
+    #[serde(default)]
+    pub remote_folder_preserved: bool,
+}
+
+/// The adapter's guarantee, not the result of a deletion attempt.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteFolderDeletion {
+    #[default]
+    AtomicEmptyOnly,
+    Unsupported,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -53,6 +66,9 @@ pub struct SyncInput {
     /// Text of the drive's `.marknotes/manifest.json`, if any. Unreadable text is treated as absent.
     #[serde(default)]
     pub manifest: Option<String>,
+    /// Omission retains the strict atomic-empty-only contract.
+    #[serde(default)]
+    pub remote_folder_deletion: RemoteFolderDeletion,
 }
 
 /// One step of a sync plan. The executor runs the actions in order; when one fails it records
@@ -118,6 +134,9 @@ pub enum Action {
         remote: RemoteEntry,
         forget: Vec<String>,
     },
+    /// Atomically retain the identity-bound folder record and enqueue its durable manual-removal notice.
+    /// Recheck local absence; do not issue a remote request or count a local change.
+    PreserveRemoteFolder { path: String, remote: RemoteEntry },
     /// The note changed on both sides: download `remote` and call `reconcile`. `has_record` tells whether the
     /// base copy should be read.
     Reconcile {
