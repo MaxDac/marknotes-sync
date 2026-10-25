@@ -150,6 +150,10 @@ tests) that fails without the fix.
 | D16 | Case folding lowercased characters outside a hand-written list, missing `S` mappings such as U+FB05 → U+FB06 and U+1FD3 → U+0390 | Fixed: a table generated from Unicode 17.0.0 CaseFolding.txt (`scripts/gen-case-folding.py`) |
 | D17 | npm silently defaulted a missing `version`, `modifiedMillis`, `remoteVersion`, `localHash` or `syncedAt` to `""` or 0 | Fixed: missing fields are an error, as `index.d.ts` and Kotlin already required |
 | D18 | npm `free()` on a scheduler made before a trap reset freed whatever the new instance had at that address | Fixed: a stale scheduler is only detached |
+| D19 | npm `plan` threw on `remoteFolderDeletion: undefined` (#18); every defaulted field rejected `undefined` and `null` | Fixed: they mean omitted (0.4.1); a wrong type still throws |
+| D20 | Nightly (seed 1): `preserveRemoteFolder` after a local folder deletion failed the ordering property | Property was stale: preservation replaces `deleteRemoteFolder` in the deepest-first folder deletions (0.4.1) |
+| D21 | Nightly (seed 1): a folder case rename was inferred while a descendant was recorded under the other spelling | Fixed: every case-folded descendant must map one-to-one, else the case errors stand (0.4.1) |
+| D22 | Nightly (seed 1): a case rename came before its parent's `recordFolder` | Characterised: renames follow the errors (since 0.3.0); their ancestors exist on both sides, so they are only recorded. Spec question: place renames in the plan order |
 
 ## Safety regressions resolved in 0.3
 

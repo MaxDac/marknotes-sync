@@ -1,6 +1,16 @@
 //! Data exchanged between the apps and the core. Field names are camelCase in JSON (fixtures, WASM) and in the
 //! generated Kotlin.
 
+/// A defaulted field given as `null` (or `undefined` from JS, which serde-wasm-bindgen passes as unit) gets its
+/// default, as if it were omitted. Any other value must still have the field's type.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(<Option<T> as serde::Deserialize>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// A file or folder in the local note tree.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -8,7 +18,7 @@
 pub struct LocalEntry {
     pub path: String,
     pub is_folder: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub modified_millis: i64,
     /// Lowercase hex SHA-256 of the file bytes. Required for files; `None` for folders.
     #[serde(default)]
@@ -39,10 +49,10 @@ pub struct SyncRecord {
     pub remote_version: String,
     pub local_hash: String,
     pub synced_at: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub local_deleted: bool,
     /// This drive's folder was retained after local deletion. Bound to `remote_id`, never to a path alone.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub remote_folder_preserved: bool,
 }
 
@@ -67,7 +77,7 @@ pub struct SyncInput {
     #[serde(default)]
     pub manifest: Option<String>,
     /// Omission retains the strict atomic-empty-only contract.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub remote_folder_deletion: RemoteFolderDeletion,
 }
 
@@ -173,7 +183,7 @@ pub struct ReconcileInput {
     #[serde(default)]
     pub base: Option<String>,
     /// Every local path, used to pick a free name for the conflicted copy.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub existing_paths: Vec<String>,
     /// A fresh note id for the conflicted copy.
     pub new_id: String,
@@ -235,4 +245,25 @@ pub enum ReconcileOutcome {
         conflict_copy_intent: ConflictCopyIntent,
         reuse_copy: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::de::value::{Error, UnitDeserializer};
+
+    #[test]
+    fn unit_from_js_undefined_means_the_default() {
+        let undefined = || UnitDeserializer::<Error>::new();
+        assert_eq!(
+            null_as_default::<_, RemoteFolderDeletion>(undefined()),
+            Ok(RemoteFolderDeletion::AtomicEmptyOnly)
+        );
+        assert_eq!(null_as_default::<_, bool>(undefined()), Ok(false));
+        assert_eq!(null_as_default::<_, i64>(undefined()), Ok(0));
+        assert_eq!(
+            null_as_default::<_, Vec<String>>(undefined()),
+            Ok(Vec::new())
+        );
+    }
 }

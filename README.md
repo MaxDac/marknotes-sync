@@ -46,7 +46,8 @@ Since 0.4.0, adapters explicitly unable to delete a folder atomically and only w
 atomically save `remoteFolderPreserved` and a durable per-drive manual-removal notice. Repeated syncs/restarts
 neither recreate the unchanged folder locally nor duplicate its notice. Acknowledgement is durable; new content,
 local recreation, replacement identities or confirmed remote absence retire that lifecycle. Omission retains the
-strict `"atomicEmptyOnly"` contract. Runtime failures are still errors, never a reason to fall back to recursive
+strict `"atomicEmptyOnly"` contract (since 0.4.1, so does `undefined` or `null` in JavaScript, as for every optional
+input field). Runtime failures are still errors, never a reason to fall back to recursive
 deletion or pretend preservation succeeded. This adds a public record field, enum and action to Rust/Kotlin/npm:
 consumers must regenerate Kotlin bindings and handle the new action when upgrading from 0.3.x.
 

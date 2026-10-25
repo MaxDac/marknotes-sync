@@ -31,3 +31,9 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+  # Unmaintained, not vulnerable. basic-toml only runs at build time, in askama_derive reading askama's own config
+  # for uniffi_bindgen's templates; nothing parses untrusted TOML with it. uniffi 0.32.2 and askama 0.16.1 are the
+  # latest releases and still depend on it. Remove once they move to `toml`.
+  { id = "RUSTSEC-2026-0374", reason = "basic-toml: build-time only via uniffi_bindgen -> askama_derive; no release without it yet" },
+]
