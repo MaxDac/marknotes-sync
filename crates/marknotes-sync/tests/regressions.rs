@@ -354,3 +354,165 @@ fn d16_case_folding_uses_the_s_mappings() {
         "\u{1FD3} (conflicted copy) 2.md"
     );
 }
+
+// D19 (#18): a defaulted input field given as null (or undefined from JS) gets its default, as if omitted; any other
+// value must still have the right type.
+
+#[test]
+fn d19_null_defaulted_fields_mean_omitted() {
+    let folder =
+        json!({ "path": "F", "id": "f", "isFolder": true, "version": "", "modifiedMillis": 0 });
+    let record = json!({ "path": "F", "isFolder": true, "remoteId": "f", "remoteVersion": "", "localHash": "", "syncedAt": 0 });
+    let input = |extra: Value| {
+        let mut input = json!({ "local": [], "remote": [folder], "records": [record] });
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value::<SyncInput>(input)
+    };
+    for absent in [json!({}), json!({ "remoteFolderDeletion": null })] {
+        assert_eq!(
+            input(absent).unwrap().remote_folder_deletion,
+            RemoteFolderDeletion::AtomicEmptyOnly
+        );
+    }
+    assert_eq!(
+        input(json!({ "remoteFolderDeletion": "atomicEmptyOnly" }))
+            .unwrap()
+            .remote_folder_deletion,
+        RemoteFolderDeletion::AtomicEmptyOnly
+    );
+    assert_eq!(
+        input(json!({ "remoteFolderDeletion": "unsupported" }))
+            .unwrap()
+            .remote_folder_deletion,
+        RemoteFolderDeletion::Unsupported
+    );
+    for bad in [
+        json!("recursive"),
+        json!(""),
+        json!("Unsupported"),
+        json!(true),
+        json!(1),
+    ] {
+        assert!(input(json!({ "remoteFolderDeletion": bad })).is_err());
+    }
+
+    let record = serde_json::from_value::<SyncRecord>(json!({
+        "path": "F", "isFolder": true, "remoteId": "f", "remoteVersion": "", "localHash": "", "syncedAt": 0,
+        "localDeleted": null, "remoteFolderPreserved": null,
+    }))
+    .unwrap();
+    assert!(!record.local_deleted && !record.remote_folder_preserved);
+    let local = serde_json::from_value::<LocalEntry>(
+        json!({ "path": "F", "isFolder": true, "modifiedMillis": null }),
+    )
+    .unwrap();
+    assert_eq!(local.modified_millis, 0);
+    let reconcile = serde_json::from_value::<ReconcileInput>(json!({
+        "path": "a.md", "local": "", "localModifiedMillis": 0, "remote": "",
+        "remoteEntry": { "path": "a.md", "id": "r", "isFolder": false, "version": "v", "modifiedMillis": 0 },
+        "existingPaths": null, "newId": "00000000",
+    }))
+    .unwrap();
+    assert!(reconcile.existing_paths.is_empty());
+    for (key, bad) in [
+        ("localDeleted", json!("true")),
+        ("remoteFolderPreserved", json!(0)),
+    ] {
+        let mut value = json!({ "path": "F", "isFolder": true, "remoteId": "f", "remoteVersion": "", "localHash": "", "syncedAt": 0 });
+        value[key] = bad;
+        assert!(
+            serde_json::from_value::<SyncRecord>(value).is_err(),
+            "{key}"
+        );
+    }
+}
+
+// D20: the first nightly (seed 1) found `preserveRemoteFolder` after a local folder deletion. It replaces
+// `deleteRemoteFolder` in the deepest-first folder deletions (spec, "Sync"), so this order is right and the property
+// was stale; pinned here.
+
+#[test]
+fn d20_preserve_remote_folder_runs_with_the_folder_deletions() {
+    let plan = plan_json(json!({
+        "local": [{ "path": "😀µµK", "isFolder": true }],
+        "remote": [{ "path": "attachments", "id": "d5-0", "isFolder": true }],
+        "records": [
+            { "path": "ś", "isFolder": true, "remoteId": "d0-0", "syncedAt": 1, "remoteFolderPreserved": true },
+            { "path": "i😀.MD", "isFolder": false, "remoteId": "f1-0", "remoteVersion": "v0", "syncedAt": 1,
+              "localHash": "75e0d458fc2da40b5b8b8b614d0192e9da7fffc2d6042f33300fdb0e8a83dfb4" },
+            { "path": "ΜÉÉ", "isFolder": true, "remoteId": "d2-0", "syncedAt": 1, "remoteFolderPreserved": true },
+            { "path": "😀µµK", "isFolder": true, "remoteId": "d4-0", "syncedAt": 1 },
+            { "path": "attachments", "isFolder": true, "remoteId": "d5-0", "syncedAt": 1 },
+        ],
+        "remoteFolderDeletion": "unsupported",
+    }));
+    let kinds: Vec<_> = plan
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| (a["kind"].as_str().unwrap(), a["path"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("forget", "ś"),
+            ("forget", "ΜÉÉ"),
+            ("forget", "i😀.MD"),
+            ("deleteLocalFolder", "😀µµK"),
+            ("preserveRemoteFolder", "attachments"),
+        ]
+    );
+}
+
+// D21: the first nightly (seed 1) found a folder case rename inferred while a descendant was recorded under the
+// other spelling of the folder. That record is inconsistent (spec, "Case-only renames"), so no rename is inferred and
+// every path in the case group, the descendant included, is a case error.
+
+#[test]
+fn d21_descendant_recorded_under_another_spelling_blocks_a_folder_case_rename() {
+    let png = "attachments/cc88f6acf10ba9e488201201e9067fd63fc23aeb64fcf686578e6d900fceeef6.png";
+    let plan = plan_json(json!({
+        "local": [{ "path": "attachmentS", "isFolder": true }],
+        "remote": [{ "path": "attachments", "id": "d4-0", "isFolder": true }],
+        "records": [
+            { "path": png, "isFolder": true, "remoteId": "f5-0", "remoteVersion": "v0", "syncedAt": 1,
+              "localHash": "cc88f6acf10ba9e488201201e9067fd63fc23aeb64fcf686578e6d900fceeef6" },
+            { "path": "attachmentS", "isFolder": true, "remoteId": "d6-0", "syncedAt": 1 },
+        ],
+    }));
+    assert_eq!(
+        plan,
+        json!([
+            error("attachmentS", CASE_MESSAGE),
+            error("attachments", CASE_MESSAGE),
+            error(png, CASE_MESSAGE),
+        ])
+    );
+}
+
+// D22: the first nightly (seed 1) found a case rename before the `recordFolder` of its parent. The spec (sync rules,
+// since MaxDac/marknotes-spec#59) places renames right after the errors; a renamed entry is on both sides, so its
+// ancestors' step 1 actions only record them and may follow the rename. The ordering property was stale.
+
+#[test]
+fn d22_case_rename_runs_before_its_parents_record_folder() {
+    let hash = "75e0d458fc2da40b5b8b8b614d0192e9da7fffc2d6042f33300fdb0e8a83dfb4";
+    let plan = plan_json(json!({
+        "local": [{ "path": "B/İς.md", "isFolder": false, "sha256": hash }, { "path": "B", "isFolder": true }],
+        "remote": [
+            { "path": "B/İσ.MD", "id": "f2-0", "isFolder": false, "version": "v1" },
+            { "path": "B", "id": "d0-0", "isFolder": true },
+        ],
+        "records": [{ "path": "B/İσ.MD", "isFolder": false, "remoteId": "f2-0", "remoteVersion": "v1", "localHash": hash, "syncedAt": 1 }],
+    }));
+    let kinds: Vec<_> = plan
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| (a["kind"].as_str().unwrap(), a["path"].as_str().unwrap()))
+        .collect();
+    assert_eq!(kinds, [("renameRemote", "B/İσ.MD"), ("recordFolder", "B")]);
+}

@@ -24,10 +24,38 @@ test("folder preservation defaults strictly, validates capability and migrates o
   assert.deepEqual(sync.recreatedFolders([{ path: "F", isFolder: true }],
     [{ ...baseline, remoteFolderPreserved: true }, baseline]), ["F"]);
   assert.deepEqual(sync.recreatedFolders([{ path: "F", isFolder: true }], [baseline]), []);
-  for (const bad of ["recursive", "", null, true, 1]) {
-    assert.throws(() => sync.plan({ ...input, remoteFolderDeletion: bad }), Error);
+  for (const bad of ["recursive", "", "Unsupported", true, 1, {}]) {
+    assert.throws(() => sync.plan({ ...input, remoteFolderDeletion: bad }), Error, String(bad));
   }
   assert.throws(() => sync.plan({ ...input, records: [{ ...baseline, remoteFolderPreserved: "true" }] }), Error);
+});
+
+test("defaulted fields given as undefined or null mean omitted (#18)", () => {
+  const folder = remote({ path: "F", id: "f", isFolder: true, version: "" });
+  const baseline = record({ path: "F", isFolder: true, remoteId: "f", remoteVersion: "", localHash: "" });
+  const input = { local: [], remote: [folder], records: [baseline] };
+  const strict = [{ kind: "deleteRemoteFolder", path: "F", remote: folder, forget: ["F"] }];
+  const preserve = [{ kind: "preserveRemoteFolder", path: "F", remote: folder }];
+  for (const absent of [undefined, null]) {
+    assert.deepEqual(sync.plan({ ...input, remoteFolderDeletion: absent }).actions, strict, String(absent));
+    assert.deepEqual(sync.plan({ ...input, remoteFolderDeletion: "unsupported",
+      records: [{ ...baseline, localDeleted: absent, remoteFolderPreserved: absent }] }).actions, preserve);
+    assert.deepEqual(sync.recreatedFolders([{ path: "F", isFolder: true, modifiedMillis: absent }],
+      [{ ...baseline, remoteFolderPreserved: absent }]), []);
+    assert.deepEqual(sync.localDeletions([{ path: "a.md", isFolder: false, modifiedMillis: absent, sha256: "h" }],
+      [record({ localDeleted: absent })]), []);
+    const outcome = sync.reconcile({
+      path: "a.md", local: "x\n", localModifiedMillis: 1, remote: "x\n", remoteEntry: remote(),
+      existingPaths: absent, newId: "00000000",
+    });
+    assert.equal(outcome.kind, "same");
+  }
+  assert.deepEqual(sync.plan({ ...input, remoteFolderDeletion: "atomicEmptyOnly" }).actions, strict);
+  assert.deepEqual(sync.plan({ ...input, remoteFolderDeletion: "unsupported" }).actions, preserve);
+  for (const [key, bad] of [["localDeleted", "true"], ["remoteFolderPreserved", 0]]) {
+    assert.throws(() => sync.plan({ ...input, records: [{ ...baseline, [key]: bad }] }), Error, key);
+  }
+  assert.throws(() => sync.plan({ ...input, local: [{ path: "a.md", isFolder: false, modifiedMillis: "0" }] }), Error);
 });
 
 function drain(scheduler, changes = 0) {

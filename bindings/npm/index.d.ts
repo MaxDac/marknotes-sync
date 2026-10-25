@@ -8,7 +8,7 @@
 export interface LocalEntry {
   path: string;
   isFolder: boolean;
-  modifiedMillis?: number;
+  modifiedMillis?: number | null | undefined;
   sha256?: string | null;
 }
 
@@ -29,9 +29,9 @@ export interface SyncRecord {
   remoteVersion: string;
   localHash: string;
   syncedAt: number;
-  localDeleted?: boolean;
+  localDeleted?: boolean | null | undefined;
   /** Folder-only, bound to remoteId and scoped to this device and drive. */
-  remoteFolderPreserved?: boolean;
+  remoteFolderPreserved?: boolean | null | undefined;
 }
 
 export interface SyncInput {
@@ -40,8 +40,8 @@ export interface SyncInput {
   records: SyncRecord[];
   /** Text of the drive's `.marknotes/manifest.json`, if any. */
   manifest?: string | null;
-  /** Omitted means the strict atomic-empty-only contract, never recursive deletion. */
-  remoteFolderDeletion?: "atomicEmptyOnly" | "unsupported";
+  /** Omitted, undefined or null means the strict atomic-empty-only contract, never recursive deletion. */
+  remoteFolderDeletion?: "atomicEmptyOnly" | "unsupported" | null | undefined;
 }
 
 /**

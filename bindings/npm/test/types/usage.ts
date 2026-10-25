@@ -79,6 +79,8 @@ buildManifest([], "device", 1n);
 mergeText(merged.chunks, { 0: "mine" });
 // @ts-expect-error sha256Hex takes bytes, not text
 sha256Hex("text");
+plan({ ...input, remoteFolderDeletion: undefined });
+plan({ ...input, remoteFolderDeletion: null });
 // @ts-expect-error no recursive deletion capability exists
 plan({ ...input, remoteFolderDeletion: "recursive" });
 // @ts-expect-error markers are booleans

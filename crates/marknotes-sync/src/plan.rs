@@ -707,15 +707,13 @@ fn case_renames(input: &SyncInput) -> Vec<Action> {
             (&r.path, &l.path)
         };
         if l.is_folder {
+            // Every case-folded descendant counts, whatever its spelling: a descendant recorded or listed under
+            // another spelling of the folder is not part of a one-to-one mapping and prevents the inference.
+            let folded = paths::fold_case(&l.path);
             let relevant: Vec<_> = groups
-                .values()
-                .filter(|(ls, rs, recs)| {
-                    ls.iter().any(|e| paths::is_ancestor(&l.path, &e.path))
-                        || rs.iter().any(|e| paths::is_ancestor(&r.path, &e.path))
-                        || recs
-                            .iter()
-                            .any(|e| paths::is_ancestor(&record.path, &e.path))
-                })
+                .iter()
+                .filter(|(key, _)| paths::is_ancestor(&folded, key))
+                .map(|(_, group)| group)
                 .collect();
             if relevant.iter().any(|(ls, rs, recs)| {
                 if let ([], [re], [rec]) = (ls.as_slice(), rs.as_slice(), recs.as_slice()) {

@@ -64,7 +64,8 @@ jobs:
           mkdir -p "fuzz/corpus/${{ matrix.target }}"
           find spec/fixtures -name '*.json' -exec cp {} "fuzz/corpus/${{ matrix.target }}/" \;
       - name: Fuzz for 15 minutes
-        run: cargo +nightly fuzz run "${{ matrix.target }}" -- -max_total_time=900 -max_len=65536 -timeout=10
+        # cargo-fuzz from install-action is a musl build and defaults to its own target; sanitizers need glibc.
+        run: cargo +nightly fuzz run --target x86_64-unknown-linux-gnu "${{ matrix.target }}" -- -max_total_time=900 -max_len=65536 -timeout=10
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
@@ -130,6 +131,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # Native cargo-deny on the toolchain pinned in rust-toolchain.toml (the cargo-deny action's musl image doesn't
+      # have it installed).
+      - run: rustup toolchain install
+      - uses: taiki-e/install-action@v2
         with:
-          command: check advisories
+          tool: cargo-deny
+      - run: cargo deny --locked check advisories

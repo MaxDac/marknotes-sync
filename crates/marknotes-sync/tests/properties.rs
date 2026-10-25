@@ -92,10 +92,14 @@ fn is_error(a: &Action) -> bool {
     matches!(a, Action::Error { .. })
 }
 
+/// Phase 3 steps. `preserveRemoteFolder` takes the place of `deleteRemoteFolder` when the adapter can't remove an
+/// empty folder atomically, so it is ordered like one.
 fn is_folder_delete(a: &Action) -> bool {
     matches!(
         a,
-        Action::DeleteLocalFolder { .. } | Action::DeleteRemoteFolder { .. }
+        Action::DeleteLocalFolder { .. }
+            | Action::DeleteRemoteFolder { .. }
+            | Action::PreserveRemoteFolder { .. }
     )
 }
 
@@ -258,12 +262,21 @@ fn proven_case_rename_paths(input: &SyncInput) -> HashSet<&str> {
             .collect();
         let mut valid = true;
         if local.is_folder {
+            let folded = paths::fold_case(&record.path);
             for child in input
                 .records
                 .iter()
-                .filter(|r| paths::is_ancestor(&record.path, &r.path))
+                .filter(|r| paths::is_ancestor(&folded, &paths::fold_case(&r.path)))
             {
-                let suffix = &child.path[record.path.len()..];
+                // A descendant recorded under another spelling of the folder doesn't map one-to-one.
+                let Some(suffix) = child
+                    .path
+                    .strip_prefix(record.path.as_str())
+                    .filter(|s| s.starts_with('/'))
+                else {
+                    valid = false;
+                    break;
+                };
                 let lp = format!("{}{suffix}", local.path);
                 let rp = format!("{}{suffix}", remote.path);
                 let ls: Vec<_> = input
@@ -324,12 +337,12 @@ fn proven_case_rename_paths(input: &SyncInput) -> HashSet<&str> {
             valid &= input
                 .local
                 .iter()
-                .filter(|e| paths::is_ancestor(&local.path, &e.path))
+                .filter(|e| paths::is_ancestor(&folded, &paths::fold_case(&e.path)))
                 .all(|e| covered.contains(e.path.as_str()));
             valid &= input
                 .remote
                 .iter()
-                .filter(|e| paths::is_ancestor(&remote.path, &e.path))
+                .filter(|e| paths::is_ancestor(&folded, &paths::fold_case(&e.path)))
                 .all(|e| covered.contains(e.path.as_str()));
         }
         if valid {
@@ -498,10 +511,15 @@ proptest! {
         if let (Some(last_folder), Some(first_file)) = (folder_steps.last(), file_steps.first()) {
             prop_assert!(last_folder.0 < first_file.0, "folder step after file step; {}", shown);
         }
-        // Errors are not steps: they are listed first and may name paths inside folders that get created.
+        // Errors are not steps: they are listed first and may name paths inside folders that get created. Case renames
+        // come right after the errors; their ancestors are on both sides, so the ancestors' `recordFolder` may follow
+        // the rename (spec, "What is synced"), never another folder step.
         for (j, a) in actions.iter().enumerate().filter(|(_, a)| !is_error(a)) {
+            let rename = matches!(a, Action::RenameLocal { .. } | Action::RenameRemote { .. });
             for (i, folder) in &folder_steps {
-                if paths::is_ancestor(folder, path_of(a)) {
+                if paths::is_ancestor(folder, path_of(a))
+                    && !(rename && matches!(actions[*i], Action::RecordFolder { .. }))
+                {
                     prop_assert!(i < &j, "{a:?} before its folder {folder}; {}", shown);
                 }
             }
@@ -510,7 +528,8 @@ proptest! {
         let local_deletes: Vec<&str> = actions.iter()
             .filter(|a| matches!(a, Action::DeleteLocalFolder { .. })).map(path_of).collect();
         let remote_deletes: Vec<&str> = actions.iter()
-            .filter(|a| matches!(a, Action::DeleteRemoteFolder { .. })).map(path_of).collect();
+            .filter(|a| matches!(a, Action::DeleteRemoteFolder { .. } | Action::PreserveRemoteFolder { .. }))
+            .map(path_of).collect();
         for (deletes, file_kind) in [(&local_deletes, true), (&remote_deletes, false)] {
             for pair in deletes.windows(2) {
                 let order = paths::depth(pair[1]).cmp(&paths::depth(pair[0]))
@@ -520,7 +539,13 @@ proptest! {
             for d in deletes {
                 let deletion = actions.iter().position(|a| is_folder_delete(a) && path_of(a) == *d).unwrap();
                 let folder_action = &actions[deletion];
-                prop_assert_eq!(forget_list(folder_action), &[d.to_string()], "{}", shown);
+                // A preserved folder keeps its record: nothing is forgotten.
+                let forgets = if matches!(folder_action, Action::PreserveRemoteFolder { .. }) {
+                    vec![]
+                } else {
+                    vec![d.to_string()]
+                };
+                prop_assert_eq!(forget_list(folder_action), &forgets[..], "{}", shown);
                 for (i, a) in actions.iter().enumerate() {
                     let inside = match a {
                         Action::DeleteLocal { path } if file_kind => paths::is_ancestor(d, path),
