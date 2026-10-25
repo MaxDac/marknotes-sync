@@ -5,6 +5,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import * as sync from "../index.js";
 
@@ -28,9 +29,9 @@ suite("sync/local-deletions.json", (i) => ({ paths: sync.localDeletions(i.local,
 suite("sync/executor-safety.json", (i) => {
   const path = fileURLToPath(new URL("../../../target/parity/executor-safety.json", import.meta.url));
   const observations = JSON.parse(readFileSync(path, "utf8"));
-  const observed = observations.find((o) => o.input.scenario === i.scenario && o.input.crashAfter === i.crashAfter);
-  assert.ok(observed, `missing reference execution for ${JSON.stringify(i)}; regenerate the parity corpus`);
-  assert.deepEqual(observed.input, i);
+  const matches = observations.filter((o) => isDeepStrictEqual(o.input, i));
+  assert.equal(matches.length, 1, `expected one reference execution for ${JSON.stringify(i)}; regenerate the parity corpus`);
+  const [observed] = matches;
   return observed.actual;
 });
 suite("sync/multi-drive.json", (i) => {

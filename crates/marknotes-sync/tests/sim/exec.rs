@@ -551,13 +551,15 @@ fn run(
             Ok(())
         }
         Action::Error { message, .. } => Err(Stop::Error(message.clone())),
-        Action::RecordFolder { path, remote_id } => save_folder_record(w, ctx, path, remote_id),
+        Action::RecordFolder { path, remote_id } => {
+            save_folder_record(w, ctx, path, remote_id, true)
+        }
         Action::CreateRemoteFolder { path } => {
             let p = path.clone();
             let entry = step(w, dev, "drive create folder", true, |w| {
                 w.drives[r].create_folder(&p)
             })?;
-            save_folder_record(w, ctx, path, &entry.id)
+            save_folder_record(w, ctx, path, &entry.id, false)
         }
         Action::CreateLocalFolder { path, remote_id } => {
             let p = path.clone();
@@ -566,7 +568,7 @@ fn run(
                 Ok(())
             })?;
             out.local_changes += 1;
-            save_folder_record(w, ctx, path, remote_id)
+            save_folder_record(w, ctx, path, remote_id, true)
         }
         Action::Forget { path } => forget(w, ctx, vec![path.clone()], None),
         Action::UploadNew { path } => {
@@ -871,7 +873,16 @@ fn uploaded_hash(
     sha_hex(bytes)
 }
 
-fn save_folder_record(w: &mut World, ctx: &Ctx, path: &str, remote_id: &str) -> Result<(), Stop> {
+/// `listed` is true when adopting an identity from the listing. A folder this executor just created replaces
+/// an absent remote, which is not identity replacement: the plan already treats its old descendants as deleted
+/// on the drive.
+fn save_folder_record(
+    w: &mut World,
+    ctx: &Ctx,
+    path: &str,
+    remote_id: &str,
+    listed: bool,
+) -> Result<(), Stop> {
     let (dev, name) = (ctx.dev, ctx.drive_name.clone());
     let rec = SyncRecord {
         path: path.to_string(),
@@ -887,11 +898,11 @@ fn save_folder_record(w: &mut World, ctx: &Ctx, path: &str, remote_id: &str) -> 
     };
     step(w, dev, "save record", true, |w| {
         let d = &mut w.devices[dev].durable;
-        let replaced = d
-            .records
-            .get(&name)
-            .and_then(|records| records.get(path))
-            .is_some_and(|old| old.is_folder && old.remote_id != remote_id);
+        let replaced = listed
+            && d.records
+                .get(&name)
+                .and_then(|records| records.get(path))
+                .is_some_and(|old| old.is_folder && old.remote_id != remote_id);
         if replaced {
             retire_folder_descendants(w, dev, ctx.drive, &name, path);
         }
