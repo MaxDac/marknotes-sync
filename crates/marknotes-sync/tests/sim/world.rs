@@ -451,6 +451,7 @@ impl World {
             remote: listing.entries,
             records: d.records(&self.drives[drive].name),
             manifest: listing.manifest,
+            remote_folder_deletion: self.drives[drive].folder_deletion(),
         })
     }
 

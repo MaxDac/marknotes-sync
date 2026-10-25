@@ -43,6 +43,12 @@ The same command executes all `sync/executor-safety.json` scenarios and writes t
 fixtures; their plan/reconcile/local-deletions fixtures separately exercise the actual binding APIs. Android test
 assets include the generated evidence. Adapter races still require each app's own tests.
 
+Deferred-folder fixtures cover durable marker/notice creation, acknowledgement and restart; new, changed and
+ignored descendants; all-drive local recreation; identity replacement (including a failed child download and
+restart); and capability upgrades. The reference executor also tests lost responses, incomplete listings, parent
+case-rename notice migration and crashes after replacement-folder recording. `recreatedFolders` is included in
+the generated Rust/WASM/Kotlin parity corpus. These tests never replace provider/store tests in the apps.
+
 Android E2E (needs an emulator or a device, `ANDROID_HOME`, and the libraries from `scripts/android-libs.sh`):
 
 ```sh

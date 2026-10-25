@@ -30,6 +30,8 @@ export interface SyncRecord {
   localHash: string;
   syncedAt: number;
   localDeleted?: boolean;
+  /** Folder-only, bound to remoteId and scoped to this device and drive. */
+  remoteFolderPreserved?: boolean;
 }
 
 export interface SyncInput {
@@ -38,6 +40,8 @@ export interface SyncInput {
   records: SyncRecord[];
   /** Text of the drive's `.marknotes/manifest.json`, if any. */
   manifest?: string | null;
+  /** Omitted means the strict atomic-empty-only contract, never recursive deletion. */
+  remoteFolderDeletion?: "atomicEmptyOnly" | "unsupported";
 }
 
 /**
@@ -60,6 +64,7 @@ export type Action =
   | { kind: "deleteRemote"; path: string; remote: RemoteEntry }
   | { kind: "deleteLocalFolder"; path: string; forget: string[] }
   | { kind: "deleteRemoteFolder"; path: string; remote: RemoteEntry; forget: string[] }
+  | { kind: "preserveRemoteFolder"; path: string; remote: RemoteEntry }
   | { kind: "reconcile"; path: string; remote: RemoteEntry; hasRecord: boolean };
 
 export interface SyncPlan {
@@ -143,6 +148,8 @@ export const DEFAULT_MAX_PASSES: 3;
 export function plan(input: SyncInput): SyncPlan;
 /** File records to flag durably on every linked drive before planning. */
 export function localDeletions(local: LocalEntry[], records: SyncRecord[]): string[];
+/** Retire these preserved folder records and active notices on ALL drives before planning; keep descendants. */
+export function recreatedFolders(local: LocalEntry[], records: SyncRecord[]): string[];
 /** Resolves a note that changed on both sides: same, merged, or newest wins with a conflicted copy. */
 export function reconcile(input: ReconcileInput): ReconcileOutcome;
 /** Line-based three-way merge; `base` is null when there is no common ancestor. */

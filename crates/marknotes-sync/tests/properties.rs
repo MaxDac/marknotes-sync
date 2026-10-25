@@ -61,6 +61,7 @@ fn path_of(a: &Action) -> &str {
         | Action::DeleteRemote { path, .. }
         | Action::DeleteLocalFolder { path, .. }
         | Action::DeleteRemoteFolder { path, .. }
+        | Action::PreserveRemoteFolder { path, .. }
         | Action::Reconcile { path, .. } => path,
     }
 }
@@ -81,6 +82,7 @@ fn remote_payload(a: &Action) -> Option<&RemoteEntry> {
         | Action::Record { remote, .. }
         | Action::DeleteRemote { remote, .. }
         | Action::DeleteRemoteFolder { remote, .. }
+        | Action::PreserveRemoteFolder { remote, .. }
         | Action::Reconcile { remote, .. } => Some(remote),
         _ => None,
     }
@@ -130,6 +132,7 @@ fn repeated<'a>(paths: impl Iterator<Item = &'a str>) -> HashSet<&'a str> {
 /// `is listed more than once` (for the path and everything inside it), then the case message (for paths that, or
 /// a folder above which, differ only in case from another path across the listings and the records).
 fn expected_errors(input: &SyncInput) -> BTreeMap<String, &'static str> {
+    let renamed = proven_case_rename_paths(input);
     let local: Vec<&LocalEntry> = input
         .local
         .iter()
@@ -179,6 +182,9 @@ fn expected_errors(input: &SyncInput) -> BTreeMap<String, &'static str> {
     }
     let mut out = BTreeMap::new();
     for p in all {
+        if renamed.contains(p) {
+            continue;
+        }
         let message = if clash.contains(p) {
             CLASH_MESSAGE
         } else if prefixes(p).any(|q| dup.contains(q)) {
@@ -191,6 +197,146 @@ fn expected_errors(input: &SyncInput) -> BTreeMap<String, &'static str> {
         out.insert(p.to_string(), message);
     }
     out
+}
+
+/// Independent record proof for the spec's exception to case-collision errors.
+fn proven_case_rename_paths(input: &SyncInput) -> HashSet<&str> {
+    let mut result = HashSet::new();
+    for record in &input.records {
+        let same_key = |p: &str| paths::fold_case(p) == paths::fold_case(&record.path);
+        let local: Vec<_> = input.local.iter().filter(|e| same_key(&e.path)).collect();
+        let remote: Vec<_> = input.remote.iter().filter(|e| same_key(&e.path)).collect();
+        let records = input.records.iter().filter(|r| same_key(&r.path)).count();
+        let ([local], [remote]) = (local.as_slice(), remote.as_slice()) else {
+            continue;
+        };
+        if records != 1
+            || (local.path == remote.path && local.path == record.path)
+            || local.is_folder != remote.is_folder
+            || local.is_folder != record.is_folder
+            || !is_synced(&local.path, local.is_folder)
+            || !is_synced(&remote.path, remote.is_folder)
+            || paths::parent(&local.path) != paths::parent(&remote.path)
+        {
+            continue;
+        }
+        let metadata_only = local.path == remote.path;
+        let local_proof = (record.path == local.path
+            || (metadata_only && remote.id == record.remote_id))
+            && (local.is_folder || local.sha256.as_deref() == Some(record.local_hash.as_str()));
+        let remote_proof = record.path == remote.path
+            && remote.id == record.remote_id
+            && (remote.is_folder || remote.version == record.remote_version);
+        if !local_proof && !remote_proof {
+            continue;
+        }
+        let parent_unambiguous = prefixes(paths::parent(&local.path))
+            .filter(|p| !p.is_empty())
+            .all(|p| {
+                let matches = |q: &str| paths::fold_case(p) == paths::fold_case(q);
+                let ls: Vec<_> = input.local.iter().filter(|e| matches(&e.path)).collect();
+                let rs: Vec<_> = input.remote.iter().filter(|e| matches(&e.path)).collect();
+                let recs: Vec<_> = input.records.iter().filter(|e| matches(&e.path)).collect();
+                let spellings: HashSet<_> = ls
+                    .iter()
+                    .map(|e| &e.path)
+                    .chain(rs.iter().map(|e| &e.path))
+                    .chain(recs.iter().map(|e| &e.path))
+                    .collect();
+                ls.len() <= 1
+                    && rs.len() <= 1
+                    && recs.len() <= 1
+                    && spellings.len() <= 1
+                    && ls.iter().all(|e| e.is_folder)
+                    && rs.iter().all(|e| e.is_folder)
+            });
+        if !parent_unambiguous {
+            continue;
+        }
+        let mut covered: HashSet<&str> = [&*local.path, &*remote.path, &*record.path]
+            .into_iter()
+            .collect();
+        let mut valid = true;
+        if local.is_folder {
+            for child in input
+                .records
+                .iter()
+                .filter(|r| paths::is_ancestor(&record.path, &r.path))
+            {
+                let suffix = &child.path[record.path.len()..];
+                let lp = format!("{}{suffix}", local.path);
+                let rp = format!("{}{suffix}", remote.path);
+                let ls: Vec<_> = input
+                    .local
+                    .iter()
+                    .filter(|e| paths::fold_case(&e.path) == paths::fold_case(&lp))
+                    .collect();
+                let rs: Vec<_> = input
+                    .remote
+                    .iter()
+                    .filter(|e| paths::fold_case(&e.path) == paths::fold_case(&rp))
+                    .collect();
+                let rec_count = input
+                    .records
+                    .iter()
+                    .filter(|r| paths::fold_case(&r.path) == paths::fold_case(&child.path))
+                    .count();
+                let [r] = rs.as_slice() else {
+                    valid = false;
+                    break;
+                };
+                if rec_count != 1
+                    || r.path != rp
+                    || r.is_folder != child.is_folder
+                    || !is_synced(&r.path, r.is_folder)
+                {
+                    valid = false;
+                    break;
+                }
+                if ls.is_empty()
+                    && child.is_folder
+                    && child.remote_folder_preserved
+                    && r.id == child.remote_id
+                {
+                    covered.extend([child.path.as_str(), r.path.as_str()]);
+                    continue;
+                }
+                let [l] = ls.as_slice() else {
+                    valid = false;
+                    break;
+                };
+                let unchanged = if local_proof {
+                    (l.is_folder || l.sha256.as_deref() == Some(child.local_hash.as_str()))
+                        && (!metadata_only || r.id == child.remote_id)
+                } else {
+                    r.id == child.remote_id && (r.is_folder || r.version == child.remote_version)
+                };
+                if l.path != lp
+                    || l.is_folder != child.is_folder
+                    || !is_synced(&l.path, l.is_folder)
+                    || !unchanged
+                {
+                    valid = false;
+                    break;
+                }
+                covered.extend([child.path.as_str(), l.path.as_str(), r.path.as_str()]);
+            }
+            valid &= input
+                .local
+                .iter()
+                .filter(|e| paths::is_ancestor(&local.path, &e.path))
+                .all(|e| covered.contains(e.path.as_str()));
+            valid &= input
+                .remote
+                .iter()
+                .filter(|e| paths::is_ancestor(&remote.path, &e.path))
+                .all(|e| covered.contains(e.path.as_str()));
+        }
+        if valid {
+            result.extend(covered);
+        }
+    }
+    result
 }
 
 /// Shows a plan with its input when a property fails.
@@ -216,6 +362,7 @@ fn shuffled_input(input: SyncInput) -> impl Strategy<Value = (SyncInput, SyncInp
     )
         .prop_map(move |(original, local, remote, records)| {
             let manifest = original.manifest.clone();
+            let remote_folder_deletion = original.remote_folder_deletion;
             (
                 original,
                 SyncInput {
@@ -223,6 +370,7 @@ fn shuffled_input(input: SyncInput) -> impl Strategy<Value = (SyncInput, SyncInp
                     remote,
                     records,
                     manifest,
+                    remote_folder_deletion,
                 },
             )
         })
@@ -234,6 +382,28 @@ fn shuffled_input(input: SyncInput) -> impl Strategy<Value = (SyncInput, SyncInp
 
 proptest! {
     #![proptest_config(gen::config())]
+
+    #[test]
+    fn preserved_folders_are_identity_bound_and_follow_guarded_files(input in gen::sync_input(14)) {
+        let actions = plan(&input).actions;
+        for (index, action) in actions.iter().enumerate() {
+            match action {
+                Action::PreserveRemoteFolder { path, remote } => {
+                    prop_assert_eq!(input.remote_folder_deletion, marknotes_sync::RemoteFolderDeletion::Unsupported);
+                    prop_assert!(!input.local.iter().any(|e| e.path == *path));
+                    prop_assert!(input.records.iter().any(|r| r.path == *path && r.is_folder
+                        && !r.remote_folder_preserved && r.remote_id == remote.id));
+                    prop_assert!(!actions[index + 1..].iter().any(is_file_step));
+                    prop_assert!(!input.remote.iter().any(|e| paths::is_ancestor(path, &e.path)
+                        && !is_synced(&e.path, e.is_folder)));
+                }
+                Action::DeleteRemoteFolder { .. } => {
+                    prop_assert_eq!(input.remote_folder_deletion, marknotes_sync::RemoteFolderDeletion::AtomicEmptyOnly);
+                }
+                _ => {}
+            }
+        }
+    }
 
     /// PLAN-TOTAL: `plan` never panics on arbitrary bounded inputs (any strings, duplicates, clashes, listings that
     /// are not prefix-closed, records of the wrong kind, any manifest text), and its plan serializes.
@@ -434,7 +604,7 @@ proptest! {
                 Action::RecordFolder { remote_id, .. } => {
                     local_folder(p) && remote_folder(p) && &remote[p].id == remote_id
                 }
-                Action::DeleteRemoteFolder { .. } => remote_folder(p),
+                Action::DeleteRemoteFolder { .. } | Action::PreserveRemoteFolder { .. } => remote_folder(p),
                 Action::Forget { .. } => !local.contains_key(p) && !remote.contains_key(p) && records.contains_key(p),
                 Action::Error { .. } => true,
             };

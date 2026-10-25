@@ -13,6 +13,11 @@ pub fn local_deletions(local: Vec<LocalEntry>, records: Vec<SyncRecord>) -> Vec<
 }
 
 #[uniffi::export]
+pub fn recreated_folders(local: Vec<LocalEntry>, records: Vec<SyncRecord>) -> Vec<String> {
+    crate::plan::recreated_folders(&local, &records)
+}
+
+#[uniffi::export]
 pub fn plan(input: SyncInput) -> SyncPlan {
     crate::plan::plan(&input)
 }

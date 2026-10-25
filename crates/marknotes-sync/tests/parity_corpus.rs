@@ -567,6 +567,15 @@ fn sync_scheduler_op() -> BoxedStrategy<Case> {
 fn ops() -> Vec<Op> {
     vec![
         Op {
+            name: "recreatedFolders",
+            description: "recreatedFolders(local, records) -> { paths }, without changing descendant state.",
+            cases: gen::sync_input(12).prop_map(|input| {
+                let input = safe_input(input);
+                let expected = marknotes_sync::recreated_folders(&input.local, &input.records);
+                Some((json!({"local": input.local, "records": input.records}), json!({"paths": expected})))
+            }).boxed(),
+        },
+        Op {
             name: "plan",
             description: "plan(input) -> { actions }, as spec/fixtures/sync/plan.json.",
             cases: plan_op(),

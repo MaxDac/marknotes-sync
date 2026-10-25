@@ -10,7 +10,7 @@ use marknotes_sync::{
     SyncInput, SyncRecord,
 };
 
-use super::device::{InFlight, Node, PendingConflict};
+use super::device::{FolderNotice, InFlight, Node, PendingConflict};
 use super::oracle::{self, attachment_hash, sha_hex};
 use super::world::{Point, When, World};
 
@@ -56,6 +56,7 @@ pub fn kind(a: &Action) -> &'static str {
         Action::DeleteRemote { .. } => "deleteRemote",
         Action::DeleteLocalFolder { .. } => "deleteLocalFolder",
         Action::DeleteRemoteFolder { .. } => "deleteRemoteFolder",
+        Action::PreserveRemoteFolder { .. } => "preserveRemoteFolder",
         Action::Reconcile { .. } => "reconcile",
     }
 }
@@ -77,6 +78,7 @@ pub fn path_of(a: &Action) -> &str {
         | Action::DeleteRemote { path, .. }
         | Action::DeleteLocalFolder { path, .. }
         | Action::DeleteRemoteFolder { path, .. }
+        | Action::PreserveRemoteFolder { path, .. }
         | Action::Reconcile { path, .. } => path,
     }
 }
@@ -169,25 +171,39 @@ pub fn sync_session(w: &mut World, dev: usize, r: usize) -> Result<SessionOutcom
     let local = match step(w, dev, "list local", false, |w| Ok(w.devices[dev].list())) {
         Ok(l) => l,
         Err(Stop::Crash) => return Err(Crashed),
-        Err(_) => {
+        Err(Stop::Error(e)) | Err(Stop::Skip(e)) => {
             out.failed = true;
+            out.errors.push(e);
             return Ok(out);
         }
     };
     let listing = match step(w, dev, "list drive", false, |w| w.drives[r].list()) {
         Ok(l) => l,
         Err(Stop::Crash) => return Err(Crashed),
-        Err(_) => {
+        Err(Stop::Error(e)) | Err(Stop::Skip(e)) => {
             out.failed = true;
+            out.errors.push(e);
             return Ok(out);
         }
     };
     match step(w, dev, "flag local deletions", true, |w| {
-        for records in w.devices[dev].durable.records.values_mut() {
+        let durable = &mut w.devices[dev].durable;
+        let mut recreated = Vec::new();
+        for (drive, records) in &mut durable.records {
             let values: Vec<_> = records.values().cloned().collect();
             for path in marknotes_sync::local_deletions(&local, &values) {
                 records.get_mut(&path).unwrap().local_deleted = true;
             }
+            for path in marknotes_sync::recreated_folders(&local, &values) {
+                let record = records.remove(&path).unwrap();
+                recreated.push((drive.clone(), path, record.remote_id));
+            }
+        }
+        for (drive, path, old_id) in recreated {
+            durable.retire_folder_notice(&drive, &path);
+            durable
+                .recreated_folder_identities
+                .insert((drive, path), old_id);
         }
         Ok(())
     }) {
@@ -204,11 +220,41 @@ pub fn sync_session(w: &mut World, dev: usize, r: usize) -> Result<SessionOutcom
         out.errors.push("listing incomplete".into());
         return Ok(out);
     }
+    let replacements: Vec<_> = w.devices[dev]
+        .durable
+        .recreated_folder_identities
+        .iter()
+        .filter(|((drive, path), old_id)| {
+            drive == &drive_name
+                && listing
+                    .entries
+                    .iter()
+                    .any(|e| e.path == *path && e.is_folder && e.id != **old_id)
+        })
+        .map(|((_, path), _)| path.clone())
+        .collect();
+    if !replacements.is_empty() {
+        match step(w, dev, "recover folder identities", true, |w| {
+            for path in replacements {
+                retire_folder_descendants(w, dev, r, &drive_name, &path);
+            }
+            Ok(())
+        }) {
+            Ok(()) => {}
+            Err(Stop::Crash) => return Err(Crashed),
+            Err(Stop::Error(e)) | Err(Stop::Skip(e)) => {
+                out.failed = true;
+                out.errors.push(e);
+                return Ok(out);
+            }
+        }
+    }
     let input = SyncInput {
         local: local.clone(),
         remote: listing.entries.clone(),
         records: w.devices[dev].records(&drive_name),
         manifest: listing.manifest.clone(),
+        remote_folder_deletion: w.drives[r].folder_deletion(),
     };
     let plan = marknotes_sync::plan(&input).actions;
     w.log(format!("  plan: {}", describe_plan(&plan)));
@@ -441,7 +487,7 @@ fn forget(
     step(w, dev, "forget", true, |w| {
         let d = &mut w.devices[dev].durable;
         let records = d.records.entry(name.clone()).or_default();
-        let bases = d.bases.entry(name).or_default();
+        let bases = d.bases.entry(name.clone()).or_default();
         let mut gone = paths_;
         if let Some(root) = &under {
             gone.extend(
@@ -453,10 +499,14 @@ fn forget(
                     .collect::<Vec<_>>(),
             );
         }
+        for p in &gone {
+            records.remove(p);
+            bases.remove(p);
+            w.oracle.on_forget(dev, r, p);
+        }
         for p in gone {
-            records.remove(&p);
-            bases.remove(&p);
-            w.oracle.on_forget(dev, r, &p);
+            d.retire_folder_notice(&name, &p);
+            d.recreated_folder_identities.remove(&(name.clone(), p));
         }
         Ok(())
     })
@@ -471,6 +521,7 @@ fn file_record(path: &str, remote: &RemoteEntry, hash: String, now: i64) -> Sync
         local_hash: hash,
         synced_at: now,
         local_deleted: false,
+        remote_folder_preserved: false,
     }
 }
 
@@ -659,6 +710,38 @@ fn run(
             })?;
             forget(w, ctx, f.clone(), None)
         }
+        Action::PreserveRemoteFolder { path, remote } => {
+            step(w, dev, "check preserve remote folder", false, |_| Ok(()))?;
+            recheck(w, dev, path, listed)?;
+            step(w, dev, "preserve remote folder", true, |w| {
+                let d = &mut w.devices[dev].durable;
+                if d.files
+                    .keys()
+                    .any(|p| p == path || paths::is_ancestor(path, p))
+                {
+                    return Err("local folder was recreated".into());
+                }
+                let record = d
+                    .records
+                    .get_mut(&ctx.drive_name)
+                    .and_then(|records| records.get_mut(path))
+                    .filter(|record| record.is_folder && record.remote_id == remote.id)
+                    .ok_or("folder record identity changed")?;
+                if !record.remote_folder_preserved {
+                    record.remote_folder_preserved = true;
+                    d.next_folder_generation += 1;
+                    d.folder_notices.push(FolderNotice {
+                        drive: ctx.drive_name.clone(),
+                        path: path.clone(),
+                        remote_id: remote.id.clone(),
+                        generation: d.next_folder_generation,
+                        acknowledged: false,
+                        active: true,
+                    });
+                }
+                Ok(())
+            })
+        }
         Action::Reconcile {
             path,
             remote,
@@ -723,6 +806,28 @@ fn run_rename(
             }
             // Rename and state migration are a durable transaction in the reference store.
             let d = &mut w.devices[dev].durable;
+            for notice in &mut d.folder_notices {
+                if notice.drive == ctx.drive_name
+                    && (notice.path == path || paths::is_ancestor(&path, &notice.path))
+                {
+                    notice.path = format!("{to_path}{}", &notice.path[path.len()..]);
+                }
+            }
+            let witnesses: Vec<_> = d
+                .recreated_folder_identities
+                .keys()
+                .filter(|(drive, p)| {
+                    drive == &ctx.drive_name && (p == &path || paths::is_ancestor(&path, p))
+                })
+                .cloned()
+                .collect();
+            for key in witnesses {
+                let old_id = d.recreated_folder_identities.remove(&key).unwrap();
+                d.recreated_folder_identities.insert(
+                    (key.0, format!("{to_path}{}", &key.1[path.len()..])),
+                    old_id,
+                );
+            }
             if let Some(records) = d.records.get_mut(&ctx.drive_name) {
                 let old: Vec<_> = records
                     .keys()
@@ -777,14 +882,67 @@ fn save_folder_record(w: &mut World, ctx: &Ctx, path: &str, remote_id: &str) -> 
         synced_at: w.now(dev),
 
         local_deleted: false,
+
+        remote_folder_preserved: false,
     };
     step(w, dev, "save record", true, |w| {
-        w.devices[dev]
-            .durable
+        let d = &mut w.devices[dev].durable;
+        let replaced = d
             .records
+            .get(&name)
+            .and_then(|records| records.get(path))
+            .is_some_and(|old| old.is_folder && old.remote_id != remote_id);
+        if replaced {
+            retire_folder_descendants(w, dev, ctx.drive, &name, path);
+        }
+        let d = &mut w.devices[dev].durable;
+        d.recreated_folder_identities
+            .remove(&(name.clone(), path.to_string()));
+        d.retire_folder_notice(&name, path);
+        d.records
             .entry(name)
             .or_default()
             .insert(rec.path.clone(), rec);
+        Ok(())
+    })
+}
+
+fn retire_folder_descendants(w: &mut World, dev: usize, drive: usize, name: &str, path: &str) {
+    let d = &mut w.devices[dev].durable;
+    let descendants: Vec<_> = d
+        .records
+        .get(name)
+        .into_iter()
+        .flat_map(|r| r.keys())
+        .chain(d.bases.get(name).into_iter().flat_map(|b| b.keys()))
+        .filter(|p| paths::is_ancestor(path, p))
+        .cloned()
+        .collect();
+    for child in descendants {
+        if let Some(records) = d.records.get_mut(name) {
+            records.remove(&child);
+        }
+        if let Some(bases) = d.bases.get_mut(name) {
+            bases.remove(&child);
+        }
+        w.oracle.on_forget(dev, drive, &child);
+    }
+    for notice in &mut d.folder_notices {
+        if notice.drive == name && paths::is_ancestor(path, &notice.path) {
+            notice.active = false;
+        }
+    }
+}
+
+pub fn acknowledge_folder_notice(w: &mut World, dev: usize, generation: u64) -> Result<(), Stop> {
+    step(w, dev, "acknowledge folder notice", true, |w| {
+        let notice = w.devices[dev]
+            .durable
+            .folder_notices
+            .iter_mut()
+            .find(|notice| notice.generation == generation)
+            .ok_or("folder notice not found")?;
+        notice.acknowledged = true;
         Ok(())
     })
 }
