@@ -3,7 +3,7 @@
 //! doesn't link on every platform). Each `check_*` panics when an invariant fails.
 use std::collections::HashMap;
 
-use marknotes_sync::front_matter::{read_id, split, with_id};
+use marknotes_sync::front_matter::{is_valid_id, read_id, split, with_id};
 use marknotes_sync::merge::lines;
 use marknotes_sync::paths::{conflict_copy_name, fold_case, is_syncable_path, normalize, parent};
 use marknotes_sync::{
@@ -40,6 +40,10 @@ pub fn check_reconcile(data: &[u8]) {
             assert_eq!(text, m.text);
         }
         ReconcileOutcome::NewestWins { copy_text, .. } => {
+            // `newId` must be a fresh note id: one with a line break and a fence would end the copy's block early.
+            if !is_valid_id(&input.new_id) {
+                return;
+            }
             // A leading BOM belongs to the front-matter block (MaxDac/marknotes-spec#33): when the copy gets a new
             // block, the losing text's BOM moves before it, out of the body.
             let body = |t: &str| split(t).1.trim_start_matches('\u{feff}').to_string();

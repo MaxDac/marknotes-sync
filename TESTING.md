@@ -155,6 +155,7 @@ tests) that fails without the fix.
 | D21 | Nightly (seed 1): a folder case rename was inferred while a descendant was recorded under the other spelling | Fixed: every case-folded descendant must map one-to-one, else the case errors stand (0.4.1, MaxDac/marknotes-spec#59) |
 | D22 | Nightly (seed 1): a case rename came before its parent's `recordFolder` | Property was stale: renames follow the errors and may precede an ancestor's `recordFolder` (MaxDac/marknotes-spec#59) |
 | D23 | Nightly fuzz (`reconcile`): a losing text that starts with a BOM and has no front matter failed the copy-body check | Check was stale: the BOM moves before the copy's new block (MaxDac/marknotes-spec#33); `fuzz/regressions/reconcile/` |
+| D24 | Nightly fuzz (`reconcile`): a `newId` containing a line break and `---` ended the copy's block early | Check was too strong: `newId` must be a fresh note id (8 characters of the id alphabet), so the copy-body check runs only for valid ids; `fuzz/regressions/reconcile/` |
 
 ## Safety regressions resolved in 0.3
 
