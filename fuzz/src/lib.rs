@@ -40,7 +40,9 @@ pub fn check_reconcile(data: &[u8]) {
             assert_eq!(text, m.text);
         }
         ReconcileOutcome::NewestWins { copy_text, .. } => {
-            let body = |t: &str| split(t).1.to_string();
+            // A leading BOM belongs to the front-matter block (MaxDac/marknotes-spec#33): when the copy gets a new
+            // block, the losing text's BOM moves before it, out of the body.
+            let body = |t: &str| split(t).1.trim_start_matches('\u{feff}').to_string();
             let kept = body(&copy_text);
             assert!(kept == body(&input.local) || kept == body(&input.remote));
         }

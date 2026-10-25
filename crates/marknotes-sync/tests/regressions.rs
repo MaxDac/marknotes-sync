@@ -493,9 +493,9 @@ fn d21_descendant_recorded_under_another_spelling_blocks_a_folder_case_rename() 
     );
 }
 
-// D22: the first nightly (seed 1) found a case rename before the `recordFolder` of its parent. Renames come right
-// after the errors (since 0.3.0); a rename only joins entries on both sides, so its ancestors exist on both sides
-// and their step only records them. Characterised: the spec doesn't place renames in the plan order yet.
+// D22: the first nightly (seed 1) found a case rename before the `recordFolder` of its parent. The spec (sync rules,
+// since MaxDac/marknotes-spec#59) places renames right after the errors; a renamed entry is on both sides, so its
+// ancestors' step 1 actions only record them and may follow the rename. The ordering property was stale.
 
 #[test]
 fn d22_case_rename_runs_before_its_parents_record_folder() {

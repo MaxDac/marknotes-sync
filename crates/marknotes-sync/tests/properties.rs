@@ -512,8 +512,8 @@ proptest! {
             prop_assert!(last_folder.0 < first_file.0, "folder step after file step; {}", shown);
         }
         // Errors are not steps: they are listed first and may name paths inside folders that get created. Case renames
-        // run right after the errors (only between entries on both sides), so they may precede the metadata-only
-        // `recordFolder` of an ancestor, never another folder step.
+        // come right after the errors; their ancestors are on both sides, so the ancestors' `recordFolder` may follow
+        // the rename (spec, "What is synced"), never another folder step.
         for (j, a) in actions.iter().enumerate().filter(|(_, a)| !is_error(a)) {
             let rename = matches!(a, Action::RenameLocal { .. } | Action::RenameRemote { .. });
             for (i, folder) in &folder_steps {
