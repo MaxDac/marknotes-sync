@@ -1,0 +1,27 @@
+
+
+
+{
+
+
+
+
+
+
+
+
+
+             "local": "a\nlo$sman%]mna(",
+   "localModifiedMillis": 999,
+        "remote": "ena\rmote\n",
+        "remoteEntry": { "path": "a.d",
+          "id": "r1",
+          "isFolder": false,
+          "version": "v3",
+          "modifiedMillis": 1999
+        },
+     
+        "newId": "r1s?/r\nHn\rL\n---\nH-\r\nH---\r\nHn\rX\n---\reyr\nH5",
+           "path": "a.md",
+         "base": "r1",  "is": 9
+        }         
